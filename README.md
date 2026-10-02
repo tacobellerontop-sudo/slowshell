@@ -25,7 +25,7 @@ writes it for you.
 ## Running it
 
 ```powershell
-git clone https://github.com/slowshell/slowshell
+git clone https://github.com/tacobellerontop-sudo/slowshell
 cd slowshell
 
 cargo shell          # run the shell
@@ -184,7 +184,7 @@ last 0.1% goes" for exactly what it is and what would remove it.
 ## Install
 
 ```
-git clone https://github.com/slowshell/slowshell
+git clone https://github.com/tacobellerontop-sudo/slowshell
 cd slowshell
 cargo shell
 ```

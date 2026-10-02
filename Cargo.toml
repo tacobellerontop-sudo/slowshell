@@ -14,7 +14,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 license = "MIT"
-repository = "https://github.com/slowshell/slowshell"
+repository = "https://github.com/tacobellerontop-sudo/slowshell"
 authors = ["Slowshell contributors"]
 
 [workspace.dependencies]
