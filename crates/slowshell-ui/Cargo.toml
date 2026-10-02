@@ -1,0 +1,16 @@
+﻿[package]
+name = "slowshell-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Retained widget tree, layout engine and animation system for Slowshell"
+
+[dependencies]
+slowshell-core = { workspace = true }
+slowshell-win = { workspace = true }
+serde = { workspace = true }
+
+[lib]
+name = "slowshell_ui"
+path = "src/lib.rs"

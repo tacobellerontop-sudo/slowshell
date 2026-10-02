@@ -1,0 +1,18 @@
+﻿[package]
+name = "slowshell-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Config loader, hot reload, system providers and widget lifecycle for Slowshell"
+
+[dependencies]
+slowshell-core = { workspace = true }
+slowshell-win = { workspace = true }
+slowshell-ui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lib]
+name = "slowshell_runtime"
+path = "src/lib.rs"

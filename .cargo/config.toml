@@ -1,0 +1,32 @@
+# Cargo aliases for working on Slowshell.
+#
+# `cargo run` on its own cannot work here: the workspace has two binaries
+# (`Shell` and `shellctl`) and cargo refuses to guess which one you meant. These
+# aliases are the answer, so nobody has to remember `-p slowshell`.
+#
+#     cargo shell              run the shell
+#     cargo shell -- --doctor  ... with arguments, after a `--`
+#     cargo ctl -- status      run shellctl
+#     cargo validate           compile the config and report, show nothing
+#     cargo run-shell          run the shell and stay in the foreground
+#     cargo run-ctl            run shellctl, foreground
+#
+# Note that `cargo shell` does not return: a desktop shell runs until it is
+# stopped, with Ctrl-C, `shellctl stop`, or by closing the process. That is the
+# same as any other shell.
+
+[alias]
+shell = "run --release -p slowshell"
+ctl = "run --release -p shellctl"
+
+# Compile a config and print any problems, without starting the UI. The fastest
+# way to check a config, and it exits.
+validate = "run --release -p slowshell -- --check"
+
+# Foreground variants, for when you want the log interleaved with your own work.
+run-shell = "run -p slowshell"
+run-ctl = "run -p shellctl"
+
+# The pixel-level render test. Not a normal test: it opens a window, draws a
+# known scene, reads the pixels back and asserts on them.
+pixels = "run -p slowshell --example render_probe"

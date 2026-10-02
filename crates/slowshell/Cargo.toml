@@ -1,0 +1,18 @@
+[package]
+name = "slowshell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "A programmable, reactive desktop shell for Windows"
+
+[dependencies]
+slowshell-core = { workspace = true }
+slowshell-win = { workspace = true }
+slowshell-ui = { workspace = true }
+slowshell-runtime = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "Shell"
+path = "src/main.rs"

@@ -1,0 +1,17 @@
+[package]
+name = "shellctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Command line control utility for Slowshell"
+
+[dependencies]
+slowshell-core = { workspace = true }
+slowshell-win = { workspace = true }
+slowshell-runtime = { workspace = true }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "shellctl"
+path = "src/main.rs"
