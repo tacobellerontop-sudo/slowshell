@@ -95,6 +95,8 @@ fn runtime() -> Runtime {
     registry.register("shell.overlay", "Overlay.", &[], |_| Ok(Value::Null));
     registry.register("shell.stop", "Stop.", &[], |_| Ok(Value::Null));
     registry.register("shell.open", "Open.", &["name"], |_| Ok(Value::Null));
+    registry.register("shell.close", "Close.", &["name"], |_| Ok(Value::Null));
+    registry.register("shell.toggle", "Toggle.", &["name"], |_| Ok(Value::Null));
     registry.register("launch", "Launch.", &["target"], |_| Ok(Value::Null));
     registry.register("notify", "Notify.", &["title", "body"], |_| Ok(Value::Null));
     registry.register("clipboard.set", "Copy.", &["text"], |_| Ok(Value::Null));

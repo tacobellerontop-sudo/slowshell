@@ -39,6 +39,7 @@ cargo ctl -- status        # what is running
 cargo ctl -- screens       # displays, work areas, and what the shell reserves
 cargo ctl -- reload        # re-read the config
 cargo ctl -- open launcher # show a named surface
+cargo ctl -- toggle launcher # open it, or close it if it is open
 cargo ctl -- stop          # quit the shell
 ```
 
@@ -166,7 +167,7 @@ visible top bar, release build, averaged over 30 s of idle):
 | Frame cost | ~0.2 ms for a 20-element bar |
 | `shellctl` round trip | ~17 ms |
 | `exclusive: true` | costs nothing at idle |
-| Tests | 337 |
+| Tests | 372 |
 
 The idle range is honest: a Hyper-V guest shares a core with its host, so
 scheduler noise is larger than the quantity being measured. Repeated runs of one
@@ -221,6 +222,7 @@ Six worked examples are in [`examples/`](examples), from one line to a launcher:
 | `launcher.config` | A run dialog opened on demand, with working launch actions. |
 | `dashboard.config` | A floating panel of `Progress` bars and a `Container` group. |
 | `media.config` | A transport bar, showing a real track title when something is playing. |
+| `kerys.config` | Works with the [Kerys](https://github.com/tacobellerontop-sudo/kerys) hotkey daemon: shows the binding mode, and Win+Space toggles the launcher. |
 
 ## Control it from a terminal
 
@@ -228,6 +230,9 @@ Six worked examples are in [`examples/`](examples), from one line to a launcher:
 shellctl status           what is running: pid, panels, adapter, uptime
 shellctl reload           re-read the config
 shellctl open launcher    show a named surface
+shellctl close launcher   close it again
+shellctl toggle launcher  open or close, for a hotkey
+shellctl set kerys.mode resize   push a value from another program
 shellctl diagnostics      the last build's problems, with file and line
 shellctl screens          the displays, with scale and refresh rate
 shellctl graph            the size of the reactive graph
@@ -300,6 +305,7 @@ running.
 | [WIDGETS.md](docs/WIDGETS.md) | Every element and every property |
 | [THEMES.md](docs/THEMES.md) | The palette, and how to write one |
 | [ACTIONS.md](docs/ACTIONS.md) | Everything a config may call |
+| [KERYS.md](docs/KERYS.md) | Working with the Kerys hotkey daemon |
 | [WINDOWS_API.md](docs/WINDOWS_API.md) | Which Windows API backs what, and where the gaps are |
 | [PLUGIN_API.md](docs/PLUGIN_API.md) | The extension surface, and its honest limits |
 | [PERFORMANCE.md](docs/PERFORMANCE.md) | The budgets and how they are held |
@@ -310,9 +316,11 @@ running.
 Slowshell is early. It runs, and the bar is real, and the framework is sound.
 These parts are not done, and the shell says so rather than pretending:
 
-- **System providers.** `clock`, `screens` and `notifications` are live.
-  `battery`, `network`, `audio`, `system`, `windows` and `virtualDesktops` read
-  as `null`. `shellctl doctor` names each one and why.
+- **System providers.** `clock`, `screens`, `media`, `battery`, `audio`,
+  `system.cpuUsage`, `system.memoryUsage`, `network.connected`,
+  `windows.active.title` and `kerys` are live. WiFi vs. Ethernet, SSID,
+  throughput and `virtualDesktops` are not;
+  [WINDOWS_API.md](docs/WINDOWS_API.md) says why for each.
 - **Per-pixel alpha.** Where the GPU driver accepts an alpha-aware swap chain,
   panels are translucent and DWM backdrops work. Some drivers — including the one
   in Hyper-V on the development machine — reject it, and the shell falls back to

@@ -10,6 +10,9 @@
 //!   shellctl reload              re-read the config
 //!   shellctl stop                quit
 //!   shellctl open launcher       show a named surface
+//!   shellctl close launcher      close it again
+//!   shellctl toggle launcher     open or close, for a hotkey
+//!   shellctl set kerys.mode resize   push a value from another program
 //!   shellctl screens             the displays the shell sees
 //!   shellctl diagnostics         the last build's problems
 //!   shellctl graph               the reactive graph's size
@@ -100,6 +103,28 @@ fn run(args: &[String]) -> Result<Outcome, String> {
                 "`open` needs the name of a surface, for example: shellctl open launcher".to_string()
             })?;
             Ok(Outcome::Request { request: Request::Open { name: name.clone() }, render: render_reload })
+        }
+        "close" => {
+            let name = args.get(1).ok_or_else(|| {
+                "`close` needs the name of a surface, for example: shellctl close launcher".to_string()
+            })?;
+            Ok(Outcome::Request { request: Request::Close { name: name.clone() }, render: render_reload })
+        }
+        "toggle" => {
+            let name = args.get(1).ok_or_else(|| {
+                "`toggle` needs the name of a surface, for example: shellctl toggle launcher"
+                    .to_string()
+            })?;
+            Ok(Outcome::Request { request: Request::Toggle { name: name.clone() }, render: render_toggle })
+        }
+        "set" => {
+            let (Some(key), Some(raw)) = (args.get(1), args.get(2)) else {
+                return Err("`set` needs a key and a value, for example: shellctl set kerys.mode resize".into());
+            };
+            Ok(Outcome::Request {
+                request: Request::Set { key: key.clone(), value: parse_value(raw) },
+                render: render_set,
+            })
         }
         "logs" => {
             let limit = flag_value(args, "--limit")
@@ -224,12 +249,31 @@ fn render_reload(v: &serde_json::Value) -> String {
         "stopping".into()
     } else {
         let opened = j::text(v, "opened");
-        if opened == "?" || opened.is_empty() {
-            "done".into()
-        } else {
+        let closed = j::text(v, "closed");
+        if !(opened == "?" || opened.is_empty()) {
             format!("opened `{opened}`")
+        } else if !(closed == "?" || closed.is_empty()) {
+            format!("closed `{closed}`")
+        } else {
+            "done".into()
         }
     }
+}
+
+/// A value typed on the command line: JSON when it parses as JSON (`3`,
+/// `true`, `"quoted"`), otherwise the text as typed, so `resize` needs no quotes.
+fn parse_value(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+}
+
+fn render_toggle(v: &serde_json::Value) -> String {
+    let name = j::text(v, "name");
+    if j::flag(v, "open") { format!("opened `{name}`") } else { format!("closed `{name}`") }
+}
+
+fn render_set(v: &serde_json::Value) -> String {
+    let key = j::text(v, "key");
+    if j::flag(v, "changed") { format!("set `{key}`") } else { format!("`{key}` already had that value") }
 }
 
 fn render_overlay(v: &serde_json::Value) -> String {
@@ -430,7 +474,7 @@ fn actions() -> String {
         out.push_str(&line);
         out.push('\n');
     }
-    out.push_str("\nAlso available from the shell: shell.reload, shell.stop, shell.overlay,\n  shell.open(name), clipboard.set(text), clipboard.get(), notify(title, body),\n  launch(target), exec.run(program, args)\n");
+    out.push_str("\nAlso available from the shell: shell.reload, shell.stop, shell.overlay,\n  shell.open(name), shell.close(name), shell.toggle(name), clipboard.set(text), clipboard.get(), notify(title, body),\n  launch(target), exec.run(program, args)\n");
     out.push_str("\n`shellctl status` lists everything the running shell has registered.\n");
     out.trim_end().to_string()
 }
@@ -447,6 +491,9 @@ COMMANDS:
     reload         Re-read the config and rebuild the scene
     stop           Quit the shell
     open <name>    Show a named surface, e.g. the launcher
+    close <name>   Close a surface that `open` showed
+    toggle <name>  Open it if closed, close it if open (bind this to a hotkey)
+    set <key> <v>  Push a value from another program, e.g. set kerys.mode resize
     overlay        Turn the developer error overlay on or off
     diagnostics    Problems from the last build, with file and line
     graph          The size of the reactive graph

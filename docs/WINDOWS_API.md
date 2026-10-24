@@ -422,6 +422,24 @@ rendering fault.
 
 ---
 
+## Battery, processor, memory, network and volume
+
+These are read in `slowshell_win::sysinfo` on the clock's one-second tick, which
+the shell already wakes for. Each is a single non-blocking call, so they add no
+wake-ups of their own, and `Reactor::set` drops unchanged values, so a still
+machine draws no frames for them.
+
+| Values | API |
+|---|---|
+| `battery.present`, `battery.percentage`, `battery.charging`, `battery.plugged` | `GetSystemPowerStatus`. A desktop reads `present: false`. |
+| `system.cpuUsage` | `GetSystemTimes`, as the difference between two ticks. |
+| `system.memoryUsage` | `GlobalMemoryStatusEx` (`dwMemoryLoad`). |
+| `network.connected`, `network.metered` | `GetNetworkConnectivityHint`, the network list service's cached answer. Looked up at run time, so Windows before 10 2004 reads as offline instead of failing to start. |
+| `audio.volume`, `audio.muted`, `audio.available` | `IAudioEndpointVolume` on the default output device, activated once and re-activated every five seconds so a new default device is picked up. |
+| `kerys.running` | `FindWindowExW` for Kerys's message-only control window. See [KERYS.md](KERYS.md). |
+
+---
+
 ## What is not implemented, and why
 
 Every entry here reads as `null` in a config. `shellctl doctor` prints this list
@@ -429,15 +447,11 @@ with each provider's current state.
 
 | Provider | Why |
 |---|---|
-| `battery` | `GetSystemPowerStatus` works but is undocumented and returns nothing useful on a desktop. `CallNtPowerInformation` is the supported route but needs a battery-class device, which a desktop does not have. |
-| `network` | `GetIfTable2` gives bytes and needs polling to become a rate. Wi-Fi SSID needs `WlanQueryInterface`, and only works for the interface Windows has a profile for. |
-| `audio` | `IAudioEndpointVolume` is a COM interface in `mmdeviceapi.dll` that the `windows` crate does not bind. Reading volume also needs an endpoint enumeration, which is a timer. Actions work; reading does not. |
-| `system` | CPU needs `PDH` counters with a collection interval — a timer. Memory is `GlobalMemoryStatusEx` and would work. |
+| `network.wifi`, `network.ssid`, throughput | `GetIfTable2` gives bytes and needs polling to become a rate. Wi-Fi SSID needs `WlanQueryInterface`, and only works for the interface Windows has a profile for. `network.connected` and `network.metered` *are* live; see below. |
 | `windows` | The foreground window's title and process need `GetForegroundWindow` plus `GetWindowText`, which for other processes' windows is a cross-process read that is often blocked, and the active-window *list* has no public API at all. |
 | `virtualDesktops` | Virtual desktops are undocumented. There is no public API, and the ones that exist are COM interfaces into `vdw10.dll` with no header. |
 | `media` | The currently playing track is exposed only through Global System Media Control Transport, which needs a UWP app identity or a proxy service. |
 | `tray` | `Shell_NotifyIcon` works, but a shell that owns the notification area has to implement the full icon contract, including the callbacks for double-click and context menu. |
 
-Two of these — `memoryUsage` and the foreground window — are within a day's work
-each. `virtualDesktops` and `media` are not, and pretending otherwise would mean
+The foreground window's title is now live as `windows.active.title`. `virtualDesktops` and `media` are not, and pretending otherwise would mean
 either a private API or a service, and Slowshell does not do either.

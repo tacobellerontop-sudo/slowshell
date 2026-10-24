@@ -302,9 +302,11 @@ Before adding a system value or a widget that could tempt a timer:
    is cheap, and it is the right way to land a provider before its consumers.
 3. **Does it change the layout?** If yes, it costs a layout pass. Not fatal, but
    it belongs in the frame budget.
-4. **Does it need polling?** If it does, the answer is usually no. `audio.volume`
-   is a worked example: the *actions* work, the *read* does not, and the reason
-   is this document.
+4. **Does it need polling?** If it does, the answer is usually no. The exception
+   is a reading that costs one non-blocking call and can ride a wake-up the
+   shell already has: battery, CPU, memory, network and volume are all read on
+   the clock's one-second tick (`slowshell_win::sysinfo`), adding no wake-ups.
+   Anything that needs its own timer, or blocks, does not qualify.
 
 ---
 

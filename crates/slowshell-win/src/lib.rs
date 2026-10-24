@@ -16,6 +16,8 @@
 //! | [`hit_test`] | Per-pixel click-through regions |
 //! | [`input`] | Logical keys, hotkey parsing |
 //! | [`ipc_pipe`] | The named-pipe transport `shellctl` talks over |
+//! | [`kerys`] | Finding, starting and stopping the Kerys hotkey daemon |
+//! | [`sysinfo`] | Battery, processor, memory, network and volume readings |
 //! | [`monitors`] | Display enumeration, work areas, reserved zones |
 //! | [`render`] | Direct2D device, brushes, text, draw commands |
 
@@ -27,12 +29,14 @@ pub mod com;
 pub mod hit_test;
 pub mod input;
 pub mod ipc_pipe;
+pub mod kerys;
 pub mod launch;
 pub mod media;
 pub mod monitors;
 pub mod notify;
 pub mod platform;
 pub mod render;
+pub mod sysinfo;
 pub mod window;
 
 pub use backdrop::Backdrop;

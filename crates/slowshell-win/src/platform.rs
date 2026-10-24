@@ -9,31 +9,17 @@
 //! Nothing in this module is reachable until [`register`] runs. A future sandbox
 //! mode therefore has one switch to flip, rather than a list of calls to audit.
 
-use std::cell::Cell;
-
 use slowshell_core::Value;
 use slowshell_core::Registry;
 
 use crate::monitors::Monitors;
 
-// Windows has no "what is the volume" API that does not need a full audio
-// endpoint enumeration on a timer, which is exactly the polling the idle budget
-// forbids. So the shell remembers what it set, and says so: the value is the
-// one slowshell last set, not a reading of the system.
-thread_local! {
-    static LAST_VOLUME: Cell<Option<u32>> = const { Cell::new(None) };
-    static MUTED: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Add every Windows action to `registry`.
 pub fn register(registry: &mut Registry) {
     // -- audio ---------------------------------------------------------------
-    // `IAudioEndpointVolume` is a COM interface in `mmdeviceapi.dll` that
-    // `windows` 0.62 does not bind. Rather than hand-roll the vtable, volume is
-    // tracked and applied through the keyboard's own volume keys, which is what
-    // a bar's volume widget does anyway. The limitation is documented here
-    // because it is user-visible: the shell can change the volume, but it cannot
-    // read it back.
+    // The default output device, through `IAudioEndpointVolume`. The reading the
+    // bar shows (`audio.volume`, `audio.muted`) comes from the same object on the
+    // clock's tick, so a click and the number on screen can never disagree.
     registry.register(
         "audio.setVolume",
         "Set the system volume, 0 to 100.",
@@ -43,21 +29,19 @@ pub fn register(registry: &mut Registry) {
             if !(0.0..=100.0).contains(&level) {
                 return Err(format!("volume must be 0 to 100, got {level}"));
             }
-            set_volume(level as u32);
-            Ok(Value::Int(level as i64))
+            crate::sysinfo::set_volume(level)?;
+            Ok(Value::Int(level.round() as i64))
         },
     );
     registry.register("audio.mute", "Mute or unmute.", &["muted"], |args| {
         let want = args[0].truthy();
-        MUTED.with(|m| m.set(want));
-        set_volume(if want { 0 } else { LAST_VOLUME.with(|v| v.get().unwrap_or(50)) });
+        crate::sysinfo::set_muted(want)?;
         Ok(Value::Bool(want))
     });
     registry.register("audio.toggleMute", "Mute if audible, unmute otherwise.", &[], |_| {
-        let now = !MUTED.with(|m| m.get());
-        MUTED.with(|m| m.set(now));
-        set_volume(if now { 0 } else { LAST_VOLUME.with(|v| v.get().unwrap_or(50)) });
-        Ok(Value::Bool(now))
+        let (_, muted) = crate::sysinfo::volume().ok_or("no audio output device")?;
+        crate::sysinfo::set_muted(!muted)?;
+        Ok(Value::Bool(!muted))
     });
     registry.register("audio.raise", "Raise the volume by five.", &[], |_| {
         nudge(5)
@@ -114,28 +98,17 @@ pub fn register(registry: &mut Registry) {
     registry.register("system.restart", "Restart the machine.", &[], |_| {
         shutdown("restart")
     });
+
+    // -- kerys ---------------------------------------------------------------
+    crate::kerys::register(registry);
 }
 
-/// Apply a volume by sending the multimedia keys the number of times needed.
-///
-/// Coarse, but it is the only route that needs no COM: the shell is a bar, it
-/// is asked to change the volume rarely, and the alternative is an audio
-/// endpoint enumeration per adjustment.
-fn set_volume(level: u32) {
-    LAST_VOLUME.with(|v| v.set(Some(level)));
-    let level = level.min(100);
-    // Stepping in twelves takes at most nine presses, which is under a second and
-    // far better than the alternative of not working at all.
-    let steps = (level / 12).min(9) as i32;
-    for _ in 0..steps {
-        let _ = send_key("VolumeUp");
-    }
-}
-
-fn nudge(delta: i32) -> Result<Value, String> {
-    let key = if delta >= 0 { "VolumeUp" } else { "VolumeDown" };
-    send_key(key)?;
-    Ok(Value::str(if delta >= 0 { "raised" } else { "lowered" }))
+/// Move the volume by `delta` points, clamped to 0..=100.
+fn nudge(delta: i64) -> Result<Value, String> {
+    let (level, _) = crate::sysinfo::volume().ok_or("no audio output device")?;
+    let next = (level + delta).clamp(0, 100);
+    crate::sysinfo::set_volume(next as f64)?;
+    Ok(Value::Int(next))
 }
 
 /// Send a key chord, given as `Win+D`, or a media key as `VolumeUp`.
@@ -166,16 +139,6 @@ fn shutdown(what: &str) -> Result<Value, String> {
     crate::launch::run("shutdown", &[flag.to_string(), "/t".to_string(), "0".to_string()])
         .map_err(|e| format!("could not {label}: {e}"))?;
     Ok(Value::str(label))
-}
-
-/// Test seam: the last volume slowshell set.
-pub fn last_volume() -> Option<u32> {
-    LAST_VOLUME.with(|v| v.get())
-}
-
-/// Test seam: whether slowshell believes it has muted.
-pub fn is_muted() -> bool {
-    MUTED.with(|m| m.get())
 }
 
 /// The title of the foreground window, or an empty string.
@@ -259,19 +222,12 @@ mod tests {
     }
 
     #[test]
-    fn setting_the_volume_records_it() {
-        let r = registry();
-        r.call(&p("audio.setVolume"), &[Value::Int(30)]).unwrap();
-        assert_eq!(last_volume(), Some(30));
-    }
-
-    #[test]
-    fn mute_toggles_and_remembers() {
-        let r = registry();
-        r.call(&p("audio.mute"), &[Value::Bool(true)]).unwrap();
-        assert!(is_muted());
-        r.call(&p("audio.toggleMute"), &[]).unwrap();
-        assert!(!is_muted());
+    fn kerys_can_be_controlled_from_a_config() {
+        let registry = registry();
+        let paths = registry.paths();
+        for want in ["kerys.start", "kerys.stop", "kerys.toggle", "kerys.settings"] {
+            assert!(paths.contains(&want), "missing {want}");
+        }
     }
 
     #[test]

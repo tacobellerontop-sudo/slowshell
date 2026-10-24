@@ -231,6 +231,10 @@ struct App {
     started: Instant,
     /// Actions that need the frame loop, queued by their registry closures.
     deferred: Deferred,
+    /// Processor load is a difference between readings, so the last one is kept.
+    cpu: slowshell_win::sysinfo::CpuMeter,
+    /// One-second ticks since start, for the work done every few of them.
+    machine_ticks: u32,
 }
 
 impl App {
@@ -286,6 +290,8 @@ impl App {
             overlay: false,
             started: Instant::now(),
             deferred,
+            cpu: slowshell_win::sysinfo::CpuMeter::new(),
+            machine_ticks: 0,
         })
     }
 
@@ -783,6 +789,8 @@ impl App {
                 .runtime
                 .reactor
                 .set("windows.active.title", Value::str(title));
+
+            changed |= self.publish_machine();
         }
 
         // A stale derived value is recomputed lazily by the next layout pass, so
@@ -796,6 +804,55 @@ impl App {
                 s.needs_layout = true;
             }
             changed = true;
+        }
+        changed
+    }
+
+    /// Battery, processor, memory, network, volume and Kerys, read on the
+    /// clock's one-second tick. Each is a non-blocking call; see
+    /// `slowshell_win::sysinfo` for why that beats a callback per provider.
+    fn publish_machine(&mut self) -> bool {
+        use slowshell_win::sysinfo;
+        let r = &self.runtime.reactor;
+        let mut changed = false;
+
+        let b = sysinfo::battery();
+        changed |= r.set("battery.present", Value::Bool(b.present));
+        changed |= r.set("battery.percentage", Value::Int(b.percentage));
+        changed |= r.set("battery.charging", Value::Bool(b.charging));
+        changed |= r.set("battery.plugged", Value::Bool(b.plugged));
+
+        if let Some(cpu) = self.cpu.sample() {
+            changed |= r.set("system.cpuUsage", Value::Int(cpu));
+        }
+        if let Some(mem) = sysinfo::memory_usage() {
+            changed |= r.set("system.memoryUsage", Value::Int(mem));
+        }
+
+        let net = sysinfo::network();
+        changed |= r.set("network.connected", Value::Bool(net.connected));
+        changed |= r.set("network.metered", Value::Bool(net.metered));
+
+        // A new default output device does not invalidate the old one while it
+        // is still plugged in, so the cached endpoint is let go every few
+        // seconds. Re-activating it is one COM call.
+        self.machine_ticks = self.machine_ticks.wrapping_add(1);
+        if self.machine_ticks % 5 == 0 {
+            sysinfo::refresh_audio_device();
+        }
+        let audio = sysinfo::volume();
+        changed |= r.set("audio.available", Value::Bool(audio.is_some()));
+        if let Some((level, muted)) = audio {
+            changed |= r.set("audio.volume", Value::Int(level));
+            changed |= r.set("audio.muted", Value::Bool(muted));
+        }
+
+        let kerys = slowshell_win::kerys::is_running();
+        changed |= r.set("kerys.running", Value::Bool(kerys));
+        if !kerys {
+            // A Kerys that exited cannot say so, and the next one starts in its
+            // default mode, so a stale "resize" would outlive it on the bar.
+            changed |= r.set("kerys.mode", Value::str("default"));
         }
         changed
     }
@@ -919,7 +976,22 @@ impl App {
                 }
                 window::reserve_appbar_by_id(hwnd);
             }
-            WindowEvent::CloseRequested => self.running = false,
+            WindowEvent::CloseRequested => {
+                // Alt+F4 on a launcher means "close the launcher", not "quit the
+                // desktop". Only a bar, which nothing could reopen, stops the shell.
+                let popup = self
+                    .surfaces
+                    .iter()
+                    .find(|s| s.handle.id() == hwnd)
+                    .map(|s| s.name.clone())
+                    .filter(|name| self.can_close(name));
+                match popup {
+                    Some(name) => {
+                        let _ = self.close_surface(&name);
+                    }
+                    None => self.running = false,
+                }
+            }
             WindowEvent::Pointer(slowshell_win::InputEvent::Moved { .. }) => {
                 self.set_reveal_open(hwnd, true)
             }
@@ -990,6 +1062,16 @@ impl App {
                         slowshell_core::warn!("`shell.open({arg0})`: {e}");
                     }
                 }
+                "shell.close" => {
+                    if let Err(e) = self.close_surface(&arg0) {
+                        slowshell_core::warn!("`shell.close({arg0})`: {e}");
+                    }
+                }
+                "shell.toggle" => {
+                    if let Err(e) = self.toggle_surface(&arg0) {
+                        slowshell_core::warn!("`shell.toggle({arg0})`: {e}");
+                    }
+                }
                 other => slowshell_core::warn!("`{other}` was queued but nothing can carry it out"),
             }
         }
@@ -1033,6 +1115,55 @@ impl App {
         self.sync_windows();
         slowshell_core::info!("opened surface `{name}`");
         Ok(())
+    }
+
+    /// Whether a named surface is open and may be closed.
+    ///
+    /// Only panels declared `hidden: true` qualify: they are the ones `shell.open`
+    /// can build again. Closing a bar would leave nothing that could bring it
+    /// back short of a reload.
+    fn can_close(&self, name: &str) -> bool {
+        !name.is_empty()
+            && self.runtime.hidden_panel(name).is_some()
+            && self.surfaces.iter().any(|s| s.name == name)
+    }
+
+    /// Close a named surface that `shell.open` opened.
+    ///
+    /// The window is destroyed rather than hidden, so a closed launcher costs
+    /// exactly what a never-opened one does: nothing.
+    fn close_surface(&mut self, name: &str) -> Result<(), String> {
+        if self.runtime.hidden_panel(name).is_none() {
+            return Err(if self.surfaces.iter().any(|s| s.name == name) {
+                format!("`{name}` is not declared `hidden: true`, so nothing could reopen it")
+            } else {
+                format!("no panel named `{name}` is declared")
+            });
+        }
+        let Some(index) = self.surfaces.iter().position(|s| s.name == name) else {
+            // Already closed is the state the caller asked for.
+            return Ok(());
+        };
+        let state = self.surfaces.remove(index);
+        window::destroy(state.handle);
+        self.sync_windows();
+        slowshell_core::info!("closed surface `{name}`");
+        Ok(())
+    }
+
+    /// Open a named surface if it is closed, close it if it is open. What a
+    /// hotkey for a launcher wants.
+    fn toggle_surface(&mut self, name: &str) -> Result<(), String> {
+        if self.surfaces.iter().any(|s| s.name == name) {
+            self.close_surface(name)
+        } else {
+            self.open_surface(name)
+        }
+    }
+
+    /// Whether a surface of this name is currently on screen.
+    fn is_open(&self, name: &str) -> bool {
+        self.surfaces.iter().any(|s| s.name == name)
     }
 
     /// Answer one `shellctl` request.
@@ -1204,6 +1335,46 @@ impl App {
                     Ok(_) => Response::ok(serde_json::json!({ "opened": name })),
                     Err(e) => Response::err(e),
                 }
+            }
+            Request::Close { name } => match self.close_surface(&name) {
+                Ok(()) => Response::ok(serde_json::json!({ "closed": name })),
+                Err(e) => Response::err(e),
+            },
+            Request::Toggle { name } => {
+                if !self.can_open(&name) {
+                    return Response::err(format!(
+                        "no panel named `{name}` is declared. Add `name: \"{name}\" hidden: true` \
+                         to a Panel, or check the name."
+                    ));
+                }
+                match self.toggle_surface(&name) {
+                    Ok(()) => Response::ok(serde_json::json!({
+                        "name": name,
+                        "open": self.is_open(&name),
+                    })),
+                    Err(e) => Response::err(e),
+                }
+            }
+            Request::Set { key, value } => {
+                // Only namespaces that belong to an outside program are writable.
+                // `battery.percentage` is the shell's to report; a script that
+                // could overwrite it would make the bar lie.
+                if !slowshell_core::ipc::is_external_key(&key) {
+                    return Response::err(format!(
+                        "`{key}` cannot be set from outside the shell. Writable keys start with {}.",
+                        slowshell_core::ipc::EXTERNAL_PREFIXES.join(", ")
+                    ));
+                }
+                if self.runtime.reactor.lookup(&key).is_none() {
+                    return Response::err(format!("`{key}` is not a known value"));
+                }
+                let changed = self.runtime.reactor.set(&key, Value::from_json(&value));
+                if changed {
+                    for s in &mut self.surfaces {
+                        s.needs_layout = true;
+                    }
+                }
+                Response::ok(serde_json::json!({ "key": key, "changed": changed }))
             }
         }
     }
@@ -1612,6 +1783,26 @@ fn register_actions(runtime: &mut Runtime, deferred: Deferred) {
         &["name"],
         move |args| {
             queue.borrow_mut().push(("shell.open".into(), args.to_vec()));
+            Ok(args[0].clone())
+        },
+    );
+    let queue = deferred.clone();
+    a.register(
+        "shell.close",
+        "Close a surface that `shell.open` opened.",
+        &["name"],
+        move |args| {
+            queue.borrow_mut().push(("shell.close".into(), args.to_vec()));
+            Ok(args[0].clone())
+        },
+    );
+    let queue = deferred.clone();
+    a.register(
+        "shell.toggle",
+        "Open a named surface if it is closed, close it if it is open.",
+        &["name"],
+        move |args| {
+            queue.borrow_mut().push(("shell.toggle".into(), args.to_vec()));
             Ok(args[0].clone())
         },
     );

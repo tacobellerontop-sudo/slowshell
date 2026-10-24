@@ -175,13 +175,19 @@ Any dotted path a provider exposes:
 ```rust
 clock.time  clock.date  clock.unix  clock.weekday
 screens.count  screens.primary.width  screens.<id>.height
-battery.percentage  battery.charging  battery.present
-network.connected  network.wifi  network.ssid
-audio.volume  audio.muted
+battery.percentage  battery.charging  battery.present  battery.plugged
+network.connected  network.metered  network.wifi  network.ssid
+audio.volume  audio.muted  audio.available
 system.cpuUsage  system.memoryUsage  system.hostName
 windows.active.title  windows.active.process
+media.title  media.artist  media.playing
+kerys.mode  kerys.running
 notifications.unreadCount
 ```
+
+`kerys.mode` is the binding mode of [Kerys](KERYS.md), the hotkey daemon:
+`"default"`, or the name of a mode such as `"resize"`. Kerys pushes it to the
+shell whenever it changes.
 
 `screens.primary` is the primary display, and each display is also addressable by
 its own id — `screens.1.width`, `screens.1.scale`. `shellctl screens` prints the
@@ -324,7 +330,8 @@ handler.config:2:23
 A handler is a call. `onClick: launcher.toggle()` is correct; `onClick: "launcher.toggle"` is a string and never runs.
 Registered actions: audio.lower, audio.mute, audio.raise, audio.setVolume, audio.toggleMute,
   clipboard.get, clipboard.set, exec.run, keys.send, launch, notify, screens.list,
-  shell.open, shell.overlay, shell.reload, shell.stop, system.restart, system.shutdown,
+  shell.close, shell.open, shell.overlay, shell.reload, shell.stop, shell.toggle,
+  system.restart, system.shutdown,
   windows.lock, windows.minimiseAll
 ```
 
