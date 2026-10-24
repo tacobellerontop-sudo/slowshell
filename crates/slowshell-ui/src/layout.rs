@@ -252,6 +252,29 @@ impl<M: Measurer> Pass<'_, M> {
         horizontal: bool,
         depth: usize,
     ) {
+        // `content` is the body of a drawer or popup, not something pinned to an
+        // edge, so it gets the whole panel: a lone child fills it outright, and
+        // several share the main axis and stretch across the other one.
+        if let Some((_, content)) = e.groups.iter().find(|(name, _)| name == "content") {
+            let kids: Vec<&Element> = content.iter().collect();
+            let visible: Vec<&Element> =
+                kids.iter().copied().filter(|k| self.resolved(k).visible).collect();
+            if let [only] = visible.as_slice() {
+                self.layout(only, inner, style, depth + 1);
+            } else {
+                self.place_children(
+                    &kids,
+                    inner,
+                    horizontal,
+                    CrossAlign::Stretch,
+                    e.kind.gap(),
+                    MainAlign::Start,
+                    style,
+                    depth,
+                );
+            }
+            return;
+        }
         let mut start: Vec<&Element> = e.children.iter().collect();
         let mut centre: Vec<&Element> = Vec::new();
         let mut end: Vec<&Element> = Vec::new();
@@ -259,7 +282,7 @@ impl<M: Measurer> Pass<'_, M> {
             let band = match name.as_str() {
                 "center" | "middle" => &mut centre,
                 "right" | "end" => &mut end,
-                // `left`, `start`, `content` and anything else stay at the start.
+                // `left`, `start` and anything else stay at the start.
                 _ => &mut start,
             };
             band.extend(group.iter());
@@ -483,10 +506,20 @@ impl<M: Measurer> Pass<'_, M> {
                 self.text_height(c)
             };
         }
-        let style = c.style.clone();
+        self.container_extent(c, horizontal)
+    }
+
+    /// A container's natural content size along one axis, without its padding.
+    ///
+    /// Along its own direction a container is the sum of its children plus the
+    /// gaps; across it, it is as big as its biggest child. Getting the axis wrong
+    /// is not cosmetic: a `Column` in a bar measured as tall as its tallest child
+    /// is centred on that height, and the rest of its children spill out of the
+    /// bottom of the panel.
+    fn container_extent(&mut self, c: &Element, horizontal: bool) -> f32 {
         let kids = Self::kids(c);
-        let gap = c.kind.gap();
-        let mut total = 0.0;
+        let along = c.kind.is_horizontal() == horizontal;
+        let mut total: f32 = 0.0;
         let mut n: usize = 0;
         for k in &kids {
             let kv = self.resolved(k);
@@ -494,11 +527,21 @@ impl<M: Measurer> Pass<'_, M> {
                 // A spacer only absorbs free space; it contributes nothing here.
                 continue;
             }
-            total += self.measure_main(k, horizontal, kv).size;
+            let ks = k.effective_style(&Style::default());
+            let margin = if horizontal { ks.margin.horizontal() } else { ks.margin.vertical() };
+            let size = self.measure_main(k, horizontal, kv).size + margin;
+            if along {
+                total += size;
+            } else {
+                total = total.max(size);
+            }
             n += 1;
         }
-        let _ = style;
-        total + gap * n.saturating_sub(1) as f32
+        if along {
+            total + c.kind.gap() * n.saturating_sub(1) as f32
+        } else {
+            total
+        }
     }
 
     /// A child's natural cross-axis size.
@@ -514,23 +557,7 @@ impl<M: Measurer> Pass<'_, M> {
             }
             ElementKind::Progress => style.font_size * 1.6,
             ElementKind::Spacer => 0.0,
-            kind if kind.is_container() => {
-                // A container is as tall as its tallest child.
-                let kids = Self::kids(c);
-                let mut tallest: f32 = 0.0;
-                for k in &kids {
-                    let kv = self.resolved(k);
-                    if !kv.visible {
-                        continue;
-                    }
-                    let ks = k.effective_style(style);
-                    let h = self.intrinsic_cross(k, &ks, horizontal, &kv)
-                        + if horizontal { ks.margin.vertical() } else { ks.margin.horizontal() }
-                        + if horizontal { ks.padding.vertical() } else { ks.padding.horizontal() };
-                    tallest = tallest.max(h);
-                }
-                tallest
-            }
+            kind if kind.is_container() => self.container_extent(c, !horizontal),
             _ => self.text_height(c),
         };
         (base + pad_cross).max(0.0)
@@ -679,6 +706,7 @@ mod tests {
                 reveal_duration: 0.18,
                 reveal_delay: 0.26,
                 reveal_ease: slowshell_core::ease::Ease::OutCubic,
+                anchor: (0.5, 0.5),
                 name: String::new(),
                 hidden: false,
                 backdrop: slowshell_win::Backdrop::None,
@@ -736,6 +764,7 @@ mod tests {
                 reveal_duration: 0.18,
                 reveal_delay: 0.26,
                 reveal_ease: slowshell_core::ease::Ease::OutCubic,
+                anchor: (0.5, 0.5),
                 name: String::new(),
                 hidden: false,
                 backdrop: slowshell_win::Backdrop::None,
@@ -861,6 +890,23 @@ mod tests {
         run(&root, Rect::new(0.0, 0.0, 400.0, 40.0), &values);
         assert!(root.children[0].rect.get().is_empty(), "a hidden element gets a zero rect");
         assert!(!root.children[1].rect.get().is_empty(), "a visible sibling still has space");
+    }
+
+    #[test]
+    fn a_column_in_a_row_is_as_tall_as_all_its_children() {
+        let column = el(
+            1,
+            ElementKind::Column { gap: 4.0, main: MainAlign::Start, cross: CrossAlign::Start },
+        )
+        .with_children(vec![text(2, "a"), text(3, "b"), text(4, "c")]);
+        let root = row_of(vec![column]);
+        run(&root, Rect::new(0.0, 0.0, 400.0, 400.0), &HashMap::new());
+        let col = root.children[0].rect.get();
+        let last = root.children[0].children[2].rect.get();
+        assert!(
+            last.y + last.h <= col.y + col.h + 0.01,
+            "the last child must fit inside its column: column {col:?}, child {last:?}"
+        );
     }
 
     #[test]

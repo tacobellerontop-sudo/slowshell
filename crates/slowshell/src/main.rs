@@ -77,6 +77,13 @@ struct Reveal {
     /// Seconds to wait before closing.
     delay: f32,
     ease: slowshell_core::ease::Ease,
+    /// Whether the reveal grows the window's height (a top or bottom panel)
+    /// rather than its width (a side panel). `width` then holds the height.
+    grows_height: bool,
+    /// For a right or bottom panel, the coordinate of the edge against the
+    /// screen, which must stay put while the panel grows away from it. Without
+    /// it the panel grows *off* the screen and looks like it never opens.
+    far_edge: Option<i32>,
 }
 
 impl Reveal {
@@ -91,6 +98,8 @@ impl Reveal {
             close_at: None,
             delay,
             ease,
+            grows_height: false,
+            far_edge: None,
         }
     }
 
@@ -105,6 +114,12 @@ impl Reveal {
 
     fn schedule_close(&mut self, now: Instant) {
         self.close_at = Some(now + Duration::from_secs_f32(self.delay));
+    }
+
+    /// Open, or opening, with no close scheduled: the state that only a pointer
+    /// leaving can end.
+    fn is_held_open(&self) -> bool {
+        self.close_at.is_none() && self.tween.target() > self.collapsed as f32
     }
 
     fn retarget(&mut self, to: f32) {
@@ -390,6 +405,12 @@ impl App {
                 Err(e) => slowshell_core::error!("could not create surface {i}: {e}"),
             }
         }
+        // A drawer's collapsed strip shares its edge with a `wrap` arm, and the
+        // arms are created last, so they land on top and swallow the hover that
+        // would open the drawer. Drawers go back above them.
+        for s in self.surfaces.iter().filter(|s| s.reveal.is_some()) {
+            window::raise(s.handle.hwnd);
+        }
         // Surfaces may have been created or dropped, so the IPC thread needs the
         // new window list before the frame loop blocks on a stale one.
         self.sync_windows();
@@ -509,12 +530,10 @@ impl App {
             monitor.width as f32
         };
 
-        // A revealing side panel spans the display the way a bar spans its width.
-        // Without this it sizes to its content, which makes the thing you hover a
-        // short stub in the middle of the edge instead of a strip you can find.
-        let reveals = matches!(&panel.kind,
-            slowshell_ui::ElementKind::Panel { reveal, .. } if *reveal);
-        let tall = reveals && position.is_vertical();
+        // A side panel spans the display's height the way a top bar spans its
+        // width. Sized to its content instead, a left bar is a short stub in the
+        // middle of the edge, and a revealing one is a strip nobody can find.
+        let tall = position.is_vertical() && declared_h.is_none();
         let span_h = placement_monitor.work_height as f32 / placement_monitor.scale;
 
         let lw = match declared_w {
@@ -536,6 +555,7 @@ impl App {
         // the panel then expands to exactly what it started at — which looks like
         // hover does nothing at all.
         let open_w = w;
+        let open_h = h;
 
         // A revealing panel starts as a thin strip on its edge. The window is
         // created at that width rather than being created wide and hidden, because
@@ -552,16 +572,19 @@ impl App {
             } => (*reveal, *reveal_size, *reveal_duration, *reveal_delay, *reveal_ease),
             _ => (false, 8.0, 0.18, 0.26, slowshell_core::ease::Ease::OutCubic),
         };
-        // Only a side edge can reveal this way. On `top` or `bottom` the panel's
-        // width is the display's, and collapsing it would leave a full-width gap
-        // in the middle of the desktop rather than a strip at the edge.
-        let revealable = reveal_spec.0 && position.is_vertical();
-        let collapsed_w = if revealable {
-            monitor.physical(reveal_spec.1.max(1.0)).max(2) as u32
-        } else {
-            w
+        // Any edge can reveal. A side panel collapses its width to the strip; a
+        // top or bottom one collapses its height, so hovering the top-centre of
+        // the screen can drop a dashboard down, the way Caelestia's does. A
+        // floating panel is against no edge, so there is no strip to hover.
+        let revealable = reveal_spec.0 && position != Position::Floating;
+        let strip = monitor.physical(reveal_spec.1.max(1.0)).max(2) as u32;
+        let grows_height = revealable && !position.is_vertical();
+        let collapsed_w = if revealable && !grows_height { strip.min(w) } else { w };
+        let collapsed_h = if grows_height { strip.min(h) } else { h };
+        let anchor = match &panel.kind {
+            slowshell_ui::ElementKind::Panel { anchor, .. } => *anchor,
+            _ => (0.5, 0.5),
         };
-        let collapsed_w = collapsed_w.min(w);
 
         // A wrap arm arrives with its rectangle already worked out: it is the
         // space *between* two edges rather than an edge strip, so no combination
@@ -578,19 +601,17 @@ impl App {
                 // narrowed to the strip below. The reveal grows it back towards
                 // the width it was placed for.
                 let (x, y) = if exclusive {
-                    position_exclusive(position, &placement_monitor, w, h)
+                    position_exclusive(position, &placement_monitor, w, h, anchor)
                 } else {
-                    position_of(position, &monitor, w, h)
+                    position_of(position, &monitor, w, h, anchor)
                 };
                 if revealable {
-                    // A left edge grows rightwards, so the strip stays at `x`. A
-                    // right edge grows leftwards, so its strip moves to the edge.
-                    let x = if position == Position::Right {
-                        x + (w - collapsed_w) as i32
-                    } else {
-                        x
-                    };
-                    (x, y, collapsed_w, h)
+                    // A left or top edge grows away from `x`/`y`, so the strip
+                    // stays there. A right or bottom edge grows back towards the
+                    // middle of the screen, so its strip moves to the edge.
+                    let x = if position == Position::Right { x + (w - collapsed_w) as i32 } else { x };
+                    let y = if position == Position::Bottom { y + (h - collapsed_h) as i32 } else { y };
+                    (x, y, collapsed_w, collapsed_h)
                 } else {
                     (x, y, w, h)
                 }
@@ -605,7 +626,7 @@ impl App {
             monitor.id,
             if arm { " (wrap arm)" } else { "" },
             if revealable {
-                format!(" (reveals from {collapsed_w}px)")
+                format!(" (reveals from {}px)", if grows_height { collapsed_h } else { collapsed_w })
             } else {
                 String::new()
             }
@@ -675,12 +696,23 @@ impl App {
             name,
             anchor: panel_anchor(panel),
             reveal: if revealable {
-                let expanded = match explicit {
-                    Some((_, _, bw, _)) => bw,
-                    None => open_w.max(collapsed_w),
+                let (collapsed, expanded) = if grows_height {
+                    (collapsed_h, open_h.max(collapsed_h))
+                } else {
+                    let open = match explicit {
+                        Some((_, _, bw, _)) => bw,
+                        None => open_w,
+                    };
+                    (collapsed_w, open.max(collapsed_w))
                 };
-                slowshell_core::debug!("reveal: {expanded}px wide when open, {collapsed_w}px closed");
-                let mut r = Reveal::new(collapsed_w, expanded, reveal_spec.3, reveal_spec.4);
+                slowshell_core::debug!("reveal: {expanded}px when open, {collapsed}px closed");
+                let mut r = Reveal::new(collapsed, expanded, reveal_spec.3, reveal_spec.4);
+                r.grows_height = grows_height;
+                r.far_edge = match position {
+                    Position::Right => Some(x + w as i32),
+                    Position::Bottom => Some(y + h as i32),
+                    _ => None,
+                };
                 // Applied here rather than read per frame, so the configured
                 // duration is used and cannot quietly stop being one.
                 r.with_duration(reveal_spec.2);
@@ -713,6 +745,30 @@ impl App {
         s.needs_layout = true;
     }
 
+    /// Close any open reveal the pointer is no longer over.
+    ///
+    /// Leaving is normally reported by `WM_MOUSELEAVE`, but that message is not
+    /// guaranteed: a pointer that jumps (a tablet, a remote session, a window that
+    /// grew out from under it) can leave without one, and a drawer that missed it
+    /// would stay open for good. One cursor read per open drawer on the clock's
+    /// tick is the backstop.
+    fn close_abandoned_reveals(&mut self) {
+        let Some((cx, cy)) = window::cursor_pos() else {
+            return;
+        };
+        let now = Instant::now();
+        for s in &mut self.surfaces {
+            let Some(reveal) = s.reveal.as_mut() else {
+                continue;
+            };
+            let (x, y, w, h) = s.bounds;
+            let inside = cx >= x && cy >= y && cx < x + w as i32 && cy < y + h as i32;
+            if !inside && reveal.is_held_open() {
+                reveal.schedule_close(now);
+            }
+        }
+    }
+
     /// Advance every running reveal by `dt` seconds, and report whether anything
     /// still moving, so the frame loop knows to stay awake.
     ///
@@ -730,9 +786,19 @@ impl App {
                 moving = true;
             }
             if let Some(want) = reveal.advance(dt, now) {
-                s.bounds.2 = want;
-                let (x, y, _, h) = s.bounds;
-                window::set_bounds(s.handle.hwnd, x, y, want, h);
+                if reveal.grows_height {
+                    s.bounds.3 = want;
+                    if let Some(far) = reveal.far_edge {
+                        s.bounds.1 = far - want as i32;
+                    }
+                } else {
+                    s.bounds.2 = want;
+                    if let Some(far) = reveal.far_edge {
+                        s.bounds.0 = far - want as i32;
+                    }
+                }
+                let (x, y, w, h) = s.bounds;
+                window::set_bounds(s.handle.hwnd, x, y, w, h);
                 s.needs_resize = true;
                 s.needs_layout = true;
             }
@@ -791,6 +857,7 @@ impl App {
                 .set("windows.active.title", Value::str(title));
 
             changed |= self.publish_machine();
+            self.close_abandoned_reveals();
         }
 
         // A stale derived value is recomputed lazily by the next layout pass, so
@@ -861,7 +928,8 @@ impl App {
     fn draw(&mut self, i: usize) {
         let dpi = self.surfaces[i].surface_dpi();
         if self.surfaces[i].needs_resize {
-            if self.surfaces[i].surface.resize().is_ok() {
+            let (_, _, w, h) = self.surfaces[i].bounds;
+            if self.surfaces[i].surface.resize(w, h).is_ok() {
                 self.surfaces[i].needs_resize = false;
             }
         }
@@ -1684,6 +1752,7 @@ fn wrap_arm_element(
             reveal_duration: 0.18,
             reveal_delay: 0.26,
             reveal_ease: slowshell_core::ease::Ease::OutCubic,
+            anchor: (0.0, 0.0),
             name,
             hidden,
             backdrop,
@@ -1886,27 +1955,32 @@ fn declared_size(panel: &Element) -> (Option<f32>, Option<f32>) {
 }
 
 /// Where a non-exclusive panel goes for a given edge.
-fn position_of(position: Position, m: &Monitor, w: u32, h: u32) -> (i32, i32) {
+fn position_of(position: Position, m: &Monitor, w: u32, h: u32, anchor: (f32, f32)) -> (i32, i32) {
+    place_in((m.x, m.y, m.width, m.height), position, w, h, anchor)
+}
+
+/// Place a `w`×`h` panel against `position`'s edge of `area`, sliding it along
+/// that edge by `anchor` when it is shorter than the edge: 0 is the start, 0.5
+/// the middle, 1 the end. A panel as long as the edge ignores it.
+fn place_in(area: (i32, i32, u32, u32), position: Position, w: u32, h: u32, anchor: (f32, f32)) -> (i32, i32) {
+    let (ax, ay, aw, ah) = area;
+    let along_x = ax + ((aw as i32 - w as i32).max(0) as f32 * anchor.0).round() as i32;
+    let along_y = ay + ((ah as i32 - h as i32).max(0) as f32 * anchor.1).round() as i32;
     match position {
-        Position::Top => (m.x, m.y),
-        Position::Bottom => (m.x, m.y + m.height as i32 - h as i32),
-        Position::Left => (m.x, m.y),
-        Position::Right => (m.x + m.width as i32 - w as i32, m.y),
-        // A floating panel has no anchor yet; the centre is the least surprising
-        // default until `anchorX`/`anchorY` are implemented.
-        Position::Floating => (m.x + (m.width as i32 - w as i32) / 2, m.y + (m.height as i32 - h as i32) / 2),
+        Position::Top => (along_x, ay),
+        Position::Bottom => (along_x, ay + ah as i32 - h as i32),
+        Position::Left => (ax, along_y),
+        Position::Right => (ax + aw as i32 - w as i32, along_y),
+        Position::Floating => (along_x, along_y),
     }
 }
 
 /// Where an exclusive panel sits: against the work-area edge on that side.
-fn position_exclusive(position: Position, m: &Monitor, w: u32, h: u32) -> (i32, i32) {
+fn position_exclusive(position: Position, m: &Monitor, w: u32, h: u32, anchor: (f32, f32)) -> (i32, i32) {
     match position {
-        Position::Top => (m.work_x, m.work_y),
-        Position::Bottom => (m.work_x, m.work_y + m.work_height as i32 - h as i32),
-        Position::Left => (m.work_x, m.work_y),
-        Position::Right => (m.work_x + m.work_width as i32 - w as i32, m.work_y),
         // A floating panel reserves nothing, so there is no edge to hug.
-        Position::Floating => position_of(position, m, w, h),
+        Position::Floating => position_of(position, m, w, h, anchor),
+        _ => place_in((m.work_x, m.work_y, m.work_width, m.work_height), position, w, h, anchor),
     }
 }
 
@@ -2232,6 +2306,7 @@ mod tests {
                 reveal_duration: 0.18,
                 reveal_delay: 0.26,
                 reveal_ease: slowshell_core::ease::Ease::OutCubic,
+                anchor: (0.5, 0.5),
                 name: String::new(),
                 hidden: false,
                 backdrop: slowshell_win::Backdrop::None,
@@ -2311,17 +2386,17 @@ mod tests {
             work_height: 1032,
         };
         // A 40px bar at the bottom sits above the 48px taskbar, not on it.
-        assert_eq!(position_exclusive(Position::Bottom, &m, 1920, 40), (0, 992));
+        assert_eq!(position_exclusive(Position::Bottom, &m, 1920, 40, (0.5, 0.5)), (0, 992));
         // And spans the work area, so it does not run under a side taskbar.
-        assert_eq!(position_exclusive(Position::Top, &m, 1920, 48), (0, 0));
+        assert_eq!(position_exclusive(Position::Top, &m, 1920, 48, (0.5, 0.5)), (0, 0));
         // A floating panel reserves nothing and hugs no edge.
         assert_eq!(
-            position_exclusive(Position::Floating, &m, 100, 40),
+            position_exclusive(Position::Floating, &m, 100, 40, (0.5, 0.5)),
             (910, 520)
         );
         // A non-exclusive panel is unaffected: it keeps the screen-edge anchor,
         // because it reserves nothing and so has nothing to stay clear of.
-        assert_eq!(position_of(Position::Bottom, &m, 1920, 40), (0, 1040));
+        assert_eq!(position_of(Position::Bottom, &m, 1920, 40, (0.5, 0.5)), (0, 1040));
     }
 
     #[test]
@@ -2343,7 +2418,7 @@ mod tests {
             work_width: 1920,
             work_height: 1080,
         };
-        let (_, y) = position_exclusive(Position::Bottom, &m, 1920, 40);
+        let (_, y) = position_exclusive(Position::Bottom, &m, 1920, 40, (0.5, 0.5));
         assert!(y >= 0 && y + 40 <= 1080, "bar at y={y} is off screen");
     }
 
@@ -2494,6 +2569,18 @@ mod tests {
     // -- reveal --------------------------------------------------------------
 
     use slowshell_core::ease::Ease;
+
+    #[test]
+    fn an_anchor_slides_a_short_panel_along_its_edge() {
+        let area = (0, 0, 1000, 800);
+        // A dashboard hanging from the top centre, as Caelestia's does.
+        assert_eq!(place_in(area, Position::Top, 400, 300, (0.5, 0.5)), (300, 0));
+        assert_eq!(place_in(area, Position::Bottom, 400, 60, (1.0, 0.5)), (600, 740));
+        assert_eq!(place_in(area, Position::Right, 200, 400, (0.5, 0.5)), (800, 200));
+        assert_eq!(place_in(area, Position::Left, 50, 800, (0.5, 0.0)), (0, 0));
+        // A panel as long as its edge ignores the anchor.
+        assert_eq!(place_in(area, Position::Top, 1000, 40, (1.0, 1.0)), (0, 0));
+    }
 
     fn reveal() -> Reveal {
         let mut r = Reveal::new(8, 210, 0.26, Ease::OutCubic);

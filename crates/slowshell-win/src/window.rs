@@ -457,6 +457,30 @@ pub fn set_always_on_top(hwnd: HWND, on: bool) {
     }
 }
 
+/// The pointer's position on the virtual screen, in physical pixels.
+pub fn cursor_pos() -> Option<(i32, i32)> {
+    let mut p = windows::Win32::Foundation::POINT::default();
+    // SAFETY: fills a caller-owned struct.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p) }.ok()?;
+    Some((p.x, p.y))
+}
+
+/// Put the window above the shell's other non-topmost windows, without moving,
+/// resizing or activating it.
+pub fn raise(hwnd: HWND) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        );
+    }
+}
+
 /// Move and resize in physical pixels without activating the window.
 pub fn set_bounds(hwnd: HWND, x: i32, y: i32, width: u32, height: u32) {
     unsafe {

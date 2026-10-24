@@ -878,9 +878,9 @@ impl Surface {
         }
     }
 
-    /// Recreate the render target after a resize.
-    pub fn resize(&mut self) -> Result<()> {
-        let (w, h) = self.size.get();
+    /// Recreate the render target after the window became `w` by `h` pixels.
+    pub fn resize(&mut self, w: u32, h: u32) -> Result<()> {
+        self.size.set((w, h));
         let alpha = self.alpha_mode();
         unsafe {
             match &mut self.backend {

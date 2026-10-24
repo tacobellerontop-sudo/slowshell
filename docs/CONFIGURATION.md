@@ -135,8 +135,10 @@ Spacer { }
 Spacer { width: 12 }
 ```
 
-`Clock` formats are `strftime`-style: `HH` `hh` `mm` `ss` `d` `D` `a` `A` `M` `b`
-`y` `p`, with `-` and `,` copied through. A format with none of them is an
+`Clock` formats are drawn as written: `HH` `hh` `mm` `ss`, `d`/`D` for the
+day, `ddd`/`dddd` for its name, `M` to `MMMM` for the month, `yy`/`yyyy`, `a`/`A`
+for am/pm, and anything else copied. See [WIDGETS.md](WIDGETS.md#clock) for the
+full table. A format with none of them is an
 error rather than a blank widget — this caught a real bug where a `Clock`
 measured as an empty string and collapsed the bar.
 

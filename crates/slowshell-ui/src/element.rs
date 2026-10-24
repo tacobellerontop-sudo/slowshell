@@ -78,6 +78,10 @@ pub enum ElementKind {
         reveal_delay: f32,
         /// The curve the reveal follows.
         reveal_ease: slowshell_core::ease::Ease,
+        /// Where a panel shorter than its edge sits along it, 0 (start) to 1
+        /// (end): `anchorX` for a top or bottom panel, `anchorY` for a side one,
+        /// both for a floating one. 0.5 centres it.
+        anchor: (f32, f32),
         /// A name for `shell.open("name")`, or empty.
         name: String,
         /// Compiled but not shown until something opens it.
@@ -169,8 +173,17 @@ impl ElementKind {
     }
 }
 
+/// One piece of a parsed clock format: text copied as is, or a run of one
+/// specifier letter. The run length is the field's width, so `d` is `5`, `dd`
+/// is `05`, `ddd` is `Tue` and `dddd` is `Tuesday`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClockPiece {
+    Literal(String),
+    Field(char, usize),
+}
+
 /// How a clock formats its value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClockFormat {
     pub hours: bool,
     pub minutes: bool,
@@ -182,6 +195,9 @@ pub struct ClockFormat {
     pub year: bool,
     /// 24-hour time, as the spec's `HH:mm` implies.
     pub hour24: bool,
+    /// The format as written. Empty means "the fields above, in a fixed order",
+    /// which is what a format built in code rather than parsed gets.
+    pub pattern: Vec<ClockPiece>,
 }
 
 impl Default for ClockFormat {
@@ -197,6 +213,7 @@ impl Default for ClockFormat {
             month: false,
             year: false,
             hour24: true,
+            pattern: Vec::new(),
         }
     }
 }
@@ -222,6 +239,7 @@ impl ClockFormat {
             month: false,
             year: false,
             hour24: true,
+            pattern: Vec::new(),
         };
         let mut hour24_seen = false;
         let mut any = false;
@@ -233,14 +251,16 @@ impl ClockFormat {
                 // A literal in single quotes passes through untouched.
                 '\'' => {
                     i += 1;
+                    let start = i;
                     while i < chars.len() && chars[i] != '\'' {
                         i += 1;
                     }
+                    push_literal(&mut f.pattern, &chars[start..i.min(chars.len())].iter().collect::<String>());
                     i += 1;
                     continue;
                 }
-                // A padding or case modifier applies to the next specifier.
-                '-' | '_' | '0' | '#' | '^' | '~' => {
+                c if !is_clock_specifier(c) => {
+                    push_literal(&mut f.pattern, &c.to_string());
                     i += 1;
                     continue;
                 }
@@ -252,6 +272,7 @@ impl ClockFormat {
                 run += 1;
             }
             i += run;
+            f.pattern.push(ClockPiece::Field(c, run));
 
             match c {
                 'H' | 'k' => {
@@ -281,12 +302,28 @@ impl ClockFormat {
                     }
                     any = true;
                 }
-                'a' | 'A' | 'w' | 'u' => {
+                // `D` is the day of the month, as in `D MMM`.
+                'D' => {
+                    f.day = true;
+                    any = true;
+                }
+                'w' | 'u' => {
                     f.weekday = true;
                     any = true;
                 }
-                'D' | 'x' => {
+                // `a` and `A` are the half of the day, so they imply 12-hour time.
+                'a' | 'A' => {
+                    f.hours = true;
+                    f.hour24 = false;
+                    any = true;
+                }
+                'x' => {
                     f.date = true;
+                    any = true;
+                }
+                'p' | 'P' => {
+                    f.hours = true;
+                    f.hour24 = false;
                     any = true;
                 }
                 // `M`, `b` and `B` are the month. `h` is already handled above as
@@ -301,7 +338,6 @@ impl ClockFormat {
                     f.year = true;
                     any = true;
                 }
-                // A literal separator or punctuation.
                 _ => {}
             }
         }
@@ -314,8 +350,51 @@ impl ClockFormat {
         Some(f)
     }
 
+    /// Render the format as written: each run of a specifier becomes its field,
+    /// everything else is copied, so `dddd, d MMMM` reads `Tuesday, 5 March`.
+    fn render_pattern(&self, unix: i64) -> String {
+        let (y, mo, d, h, mi, s, wd) = civil_from_unix(unix);
+        let h12 = if h % 12 == 0 { 12 } else { h % 12 };
+        let num = |v: u32, run: usize| if run >= 2 { format!("{v:02}") } else { v.to_string() };
+        let mut out = String::new();
+        for piece in &self.pattern {
+            match piece {
+                ClockPiece::Literal(text) => out.push_str(text),
+                ClockPiece::Field(c, run) => {
+                    let run = *run;
+                    let field = match c {
+                        'H' | 'k' => num(h, run),
+                        'h' | 'g' => num(h12, run),
+                        'm' => num(mi, run),
+                        's' | 'S' => num(s, run),
+                        'd' if run >= 4 => WEEKDAY_NAMES[wd as usize % 7].to_string(),
+                        'd' if run == 3 => WEEKDAYS[wd as usize % 7].to_string(),
+                        'd' | 'D' => num(d, run),
+                        'w' | 'u' => WEEKDAYS[wd as usize % 7].to_string(),
+                        'M' if run >= 4 => MONTH_NAMES[(mo as usize + 11) % 12].to_string(),
+                        'M' if run == 3 => MONTH_NAMES[(mo as usize + 11) % 12][..3].to_string(),
+                        'M' => num(mo, run),
+                        'b' => MONTH_NAMES[(mo as usize + 11) % 12][..3].to_string(),
+                        'B' => MONTH_NAMES[(mo as usize + 11) % 12].to_string(),
+                        'y' if run == 2 => format!("{:02}", y.rem_euclid(100)),
+                        'y' | 'Y' => format!("{y:04}"),
+                        'x' => format!("{d:02}/{mo:02}/{y:04}"),
+                        'a' | 'p' => (if h < 12 { "am" } else { "pm" }).to_string(),
+                        'A' | 'P' => (if h < 12 { "AM" } else { "PM" }).to_string(),
+                        _ => String::new(),
+                    };
+                    out.push_str(&field);
+                }
+            }
+        }
+        out
+    }
+
     /// Render `seconds` since the Unix epoch.
     pub fn render(&self, unix: i64) -> String {
+        if !self.pattern.is_empty() {
+            return self.render_pattern(unix);
+        }
         let (y, mo, d, h, mi, s, wd) = civil_from_unix(unix);
         let mut out = String::new();
         if self.weekday {
@@ -373,6 +452,26 @@ impl ClockFormat {
 }
 
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const WEEKDAY_NAMES: [&str; 7] =
+    ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const MONTH_NAMES: [&str; 12] = [
+    "January", "February", "March", "April", "May", "June", "July", "August", "September",
+    "October", "November", "December",
+];
+
+/// The letters a clock format treats as fields. Anything else is copied.
+fn is_clock_specifier(c: char) -> bool {
+    matches!(c, 'H' | 'k' | 'h' | 'g' | 'm' | 's' | 'S' | 'd' | 'D' | 'a' | 'A' | 'w' | 'u'
+        | 'M' | 'b' | 'B' | 'y' | 'Y' | 'x' | 'p' | 'P')
+}
+
+fn push_literal(pattern: &mut Vec<ClockPiece>, text: &str) {
+    if let Some(ClockPiece::Literal(last)) = pattern.last_mut() {
+        last.push_str(text);
+    } else if !text.is_empty() {
+        pattern.push(ClockPiece::Literal(text.to_string()));
+    }
+}
 
 /// Build a timestamp from civil components, the inverse of [`civil_from_unix`].
 ///
@@ -764,7 +863,23 @@ mod tests {
             month: false,
             year: false,
             hour24: true,
+            pattern: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_parsed_format_renders_as_written() {
+        // 2024-03-05 was a Tuesday.
+        let unix = civil_to_unix(2024, 3, 5, 14, 7, 9);
+        let render = |spec: &str| ClockFormat::parse(spec).unwrap().render(unix);
+        assert_eq!(render("dddd, d MMMM"), "Tuesday, 5 March");
+        assert_eq!(render("ddd D MMM"), "Tue 5 Mar");
+        assert_eq!(render("hh:mm A"), "02:07 PM");
+        assert_eq!(render("dd/MM/yyyy"), "05/03/2024");
+        assert_eq!(render("HH:mm:ss"), "14:07:09");
+        assert_eq!(render("h:mm p"), "2:07 pm");
+        assert_eq!(render("'week of' MMM yy"), "week of Mar 24");
+        assert_eq!(render("HH"), "14");
     }
 
     #[test]
