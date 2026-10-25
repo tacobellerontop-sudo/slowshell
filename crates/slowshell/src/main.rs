@@ -602,6 +602,13 @@ impl App {
                 // the width it was placed for.
                 let (x, y) = if exclusive {
                     position_exclusive(position, &placement_monitor, w, h, anchor)
+                } else if revealable {
+                    // A drawer hugs the work area as Windows had it before this
+                    // shell reserved anything: inside the real taskbar, which is
+                    // topmost and would otherwise cover a bottom drawer's strip
+                    // completely, but on top of this shell's own bar and frame,
+                    // so touching the frame is what opens it.
+                    position_exclusive(position, &monitor, w, h, anchor)
                 } else {
                     position_of(position, &monitor, w, h, anchor)
                 };

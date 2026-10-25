@@ -446,14 +446,20 @@ pub fn set_click_through(hwnd: HWND, on: bool) {
 }
 
 pub fn set_always_on_top(hwnd: HWND, on: bool) {
+    // Only `SetWindowPos` moves a window into or out of the topmost band.
+    // Setting `WS_EX_TOPMOST` with `SetWindowLongPtrW` changes the style bit and
+    // nothing else, so a panel set up that way sank behind the first window the
+    // user clicked, and a drawer opened underneath whatever was maximised.
     unsafe {
-        let mut ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        if on {
-            ex |= WS_EX_TOPMOST.0 as isize;
-        } else {
-            ex &= !(WS_EX_TOPMOST.0 as isize);
-        }
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(if on { HWND_TOPMOST } else { HWND_NOTOPMOST }),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+        );
     }
 }
 
@@ -465,13 +471,13 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
     Some((p.x, p.y))
 }
 
-/// Put the window above the shell's other non-topmost windows, without moving,
-/// resizing or activating it.
+/// Put the window at the top of the topmost band, above the shell's other
+/// panels, without moving, resizing or activating it.
 pub fn raise(hwnd: HWND) {
     unsafe {
         let _ = SetWindowPos(
             hwnd,
-            Some(HWND_TOP),
+            Some(HWND_TOPMOST),
             0,
             0,
             0,
