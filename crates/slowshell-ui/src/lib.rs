@@ -24,7 +24,7 @@ pub mod paint;
 pub mod style;
 
 pub use element::{civil_from_unix, civil_to_unix,
-    ClockFormat, Dyn, Element, ElementId, ElementKind, Handler,
+    ClockFormat, ClockPiece, Dyn, Element, ElementId, ElementKind, Handler,
 };
 pub use layout::{layout, panel_intrinsic, resolve_values, ElementIdKey, Intrinsic, Measurer, Resolved};
 pub use paint::{collect_regions, paint, take_output, PaintOutput};

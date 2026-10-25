@@ -40,7 +40,7 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, SetNamedPipeHandleState,
@@ -235,8 +235,15 @@ pub fn request(req: &Request, timeout_ms: u32) -> std::result::Result<Response, 
                 return Ok(r);
             }
             Err(e) => {
-                last = Some(e);
                 let _ = unsafe { CloseHandle(handle) };
+                // Once the request is written the shell may have acted on it, and
+                // sending it again would run it twice: a `toggle` would open and
+                // close the launcher in one command. Only a failed write is safe
+                // to retry.
+                if !e.starts_with("write failed") {
+                    return Err(format!("could not read the shell's answer: {e}"));
+                }
+                last = Some(e);
                 // A server that was torn down mid-exchange is a race, not a
                 // failure: the next attempt finds the replacement instance.
                 let _ = unsafe { WaitNamedPipeW(windows::core::PCWSTR(name.as_ptr()), timeout_ms) };
@@ -382,6 +389,11 @@ fn accept_loop(name: &str, tx: Sender<Pending>, waker: Arc<std::sync::Mutex<Vec<
             let keep_going = serve_one(&mut reader, &mut writer, &tx, &waker);
             match create_instance(&wide) {
                 Some(next) => {
+                    // `DisconnectNamedPipe` throws away whatever the client has
+                    // not read yet, so the reply is flushed first. Without this a
+                    // fast server answers into the void and the client sees "pipe
+                    // not connected" for a request that was carried out.
+                    let _ = unsafe { FlushFileBuffers(handle) };
                     let _ = unsafe { DisconnectNamedPipe(handle) };
                     let _ = unsafe { CloseHandle(handle) };
                     handle = next;

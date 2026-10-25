@@ -38,8 +38,8 @@ Panel {
 | `alwaysOnTop` | bool | Keep above other windows. Default `true`. |
 | `clickThrough` | bool | Ignore all pointer input. |
 | `layer` | int | Stacking order among the shell's own surfaces. |
-| `anchorX` | number | Horizontal position when `position: "floating"`, 0 to 1. |
-| `anchorY` | number | Vertical position when `position: "floating"`, 0 to 1. |
+| `anchorX` | number | Where a `top`, `bottom` or `floating` panel narrower than the screen sits along it: `0` left, `0.5` centre (default), `1` right. |
+| `anchorY` | number | Where a `left`, `right` or `floating` panel shorter than the screen sits along it: `0` top, `0.5` centre (default), `1` bottom. |
 | `name` | string | A name for `shell.open("name")`. |
 
 With `exclusive: true` the panel is measured and placed against the display's
@@ -65,10 +65,10 @@ pointer enters — the dock-edge gesture Caelestia Shell uses.
 
 ```rust
 Panel {
-    position: "left"    // only left or right: it needs an edge to hug
+    position: "left"    // any edge; not floating, which has no edge to hug
     width: 210          // how wide it is when open
     reveal: true
-    revealSize: 8       // how wide it is closed, i.e. what you hover
+    revealSize: 8       // how thick it is closed, i.e. what you hover
     revealDuration: 180 // ms
     revealDelay: 260    // ms to wait after the pointer leaves
     revealEase: "outCubic"
@@ -92,9 +92,23 @@ Two details that are not obvious and that cost a real bug each:
   makes the window *told* where the pointer is without making it interactive:
   clicks are still routed by region and still fall through empty areas.
 
-Only `left` and `right` reveal this way. On `top` or `bottom` the panel's width is
-the display's, and collapsing it would leave a full-width gap in the middle of the
-desktop rather than a strip at the edge.
+Every edge reveals. A `left` or `right` panel opens sideways; a `top` or `bottom`
+one drops down or rises up. Give a top or bottom drawer a `width` and an
+`anchorX`, or a side drawer a `height` and an `anchorY`, and only that stretch
+of the edge opens it, so one edge can hold several drawers:
+
+```rust
+Panel { position: "top"     anchorX: 0.5   width: 620  height: 250  reveal: true }  // dashboard
+Panel { position: "right"   anchorY: 0.3   width: 64   height: 200  reveal: true }  // volume
+Panel { position: "right"   anchorY: 0.62  width: 80   height: 300  reveal: true }  // session
+```
+
+A drawer's `content` group fills the whole drawer, so a `Column` in it can
+stretch its rows across the full width.
+
+If the pointer leaves without Windows saying so (it jumps, or a remote session
+drops the message), the shell notices on its next one-second tick and closes the
+drawer anyway.
 
 Easing curves live in `slowshell-core/src/ease.rs` and are unit-tested on their
 own, because "does this feel right" is otherwise only answerable by eye — and by
@@ -317,21 +331,24 @@ A live clock.
 
 ### Formats
 
+The format is drawn as written: each run of a letter below becomes its field,
+and anything else (spaces, `:`, `,`, `/`) is copied. Text in single quotes is
+copied as is, so `"'week of' MMM"` works.
+
 | | | | |
 |---|---|---|---|
-| `HH` | 24-hour, `00`–`23` | `hh` | 12-hour, `01`–`12` |
+| `HH` / `H` | 24-hour, `09` / `9` | `hh` / `h` | 12-hour, `02` / `2` |
 | `mm` | Minutes | `ss` | Seconds |
-| `d` | Day, `1`–`31` | `D` | Day name, `Mon` |
-| `a` | `AM`/`PM` | `A` | `AM`/`PM` (upper) |
-| `M` | Month, `1`–`12` | `b` | Month name, `Jan` |
-| `y` | Year | `p` | `AM`/`PM`, lowercase |
-
-`-` and `,` are copied through, so `"D, d MMM"` and `"HH:mm:ss"` both work.
+| `dd` / `d` / `D` | Day of the month, `05` / `5` | `ddd` / `dddd` | Day name, `Tue` / `Tuesday` |
+| `MM` / `M` | Month, `03` / `3` | `MMM` / `MMMM` | Month name, `Mar` / `March` |
+| `yyyy` | Year, `2024` | `yy` | Year, `24` |
+| `a` / `p` | `am`/`pm` | `A` / `P` | `AM`/`PM` |
 
 ```rust
 Clock { format: "HH:mm" }
 Clock { format: "D MMM" }
 Clock { format: "ddd, HH:mm" }
+Clock { format: "dddd, d MMMM" }   // Tuesday, 5 March
 ```
 
 A format with none of the tokens in it is a **diagnostic**, not a blank widget.

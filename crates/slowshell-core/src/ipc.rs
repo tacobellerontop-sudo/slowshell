@@ -29,6 +29,29 @@ pub enum Request {
     Screens,
     /// Open a named surface, e.g. `{"name": "launcher"}`.
     Open { name: String },
+    /// Close a surface that `open` opened.
+    Close { name: String },
+    /// Open a named surface if it is closed, close it if it is open.
+    Toggle { name: String },
+    /// Push a value into the reactive graph from outside the shell, e.g.
+    /// `{"key": "kerys.mode", "value": "resize"}`. Only keys under
+    /// [`EXTERNAL_PREFIXES`] are accepted.
+    Set { key: String, value: serde_json::Value },
+}
+
+/// The namespaces another program may write with [`Request::Set`].
+///
+/// Each one is owned by a program outside the shell, which is the only thing
+/// that knows its value. Everything else (the clock, the battery) is the shell's
+/// own reading of the system, and a script that could overwrite it could make
+/// the bar lie.
+pub const EXTERNAL_PREFIXES: &[&str] = &["kerys.", "wm."];
+
+/// Whether `key` may be written with [`Request::Set`].
+pub fn is_external_key(key: &str) -> bool {
+    EXTERNAL_PREFIXES
+        .iter()
+        .any(|p| key.len() > p.len() && key.starts_with(p))
 }
 
 impl Request {
@@ -48,6 +71,9 @@ impl Request {
             Request::Graph => "graph",
             Request::Screens => "screens",
             Request::Open { .. } => "open",
+            Request::Close { .. } => "close",
+            Request::Toggle { .. } => "toggle",
+            Request::Set { .. } => "set",
         }
     }
 }
@@ -185,6 +211,9 @@ mod tests {
             Request::Graph,
             Request::Screens,
             Request::Open { name: "x".into() },
+            Request::Close { name: "x".into() },
+            Request::Toggle { name: "x".into() },
+            Request::Set { key: "kerys.mode".into(), value: serde_json::json!("resize") },
         ];
         for r in all {
             let s = serde_json::to_string(&r).unwrap();
@@ -198,6 +227,28 @@ mod tests {
         let s = serde_json::to_string(&Response::ok(serde_json::json!({"pid": 1}))).unwrap();
         assert!(s.contains("\"status\":\"ok\""), "{s}");
         assert!(Response::err("nope").into_result().is_err());
+    }
+
+    #[test]
+    fn the_wire_format_kerys_sends_parses() {
+        // Kerys writes these by hand, without this crate, so the exact text is
+        // part of the protocol.
+        assert_eq!(
+            Request::parse(r#"{"cmd":"toggle","name":"launcher"}"#).unwrap(),
+            Request::Toggle { name: "launcher".into() }
+        );
+        assert_eq!(
+            Request::parse(r#"{"cmd":"set","key":"kerys.mode","value":"resize"}"#).unwrap(),
+            Request::Set { key: "kerys.mode".into(), value: serde_json::json!("resize") }
+        );
+    }
+
+    #[test]
+    fn only_external_namespaces_are_writable() {
+        assert!(is_external_key("kerys.mode"));
+        assert!(!is_external_key("kerys."));
+        assert!(!is_external_key("battery.percentage"));
+        assert!(!is_external_key("kerysx.mode"));
     }
 
     #[test]

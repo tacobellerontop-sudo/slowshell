@@ -54,7 +54,6 @@ features = [
     "Win32_Storage_EnhancedStorage",
     "Win32_Devices_Display",
     "Win32_Devices_Properties",
-    "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_NetShell",
     "Win32_Media_Audio",
@@ -68,6 +67,8 @@ features = [
     "Win32_System_Pipes",
     "Win32_System_Shutdown",
     "Win32_System_IO",
+    "Win32_Networking_WinSock",
+    "Win32_System_Variant",
 ]
 
 [lib]

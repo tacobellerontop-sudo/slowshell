@@ -118,12 +118,12 @@ const PANEL: &[PropSpec] = &[
     p(
         "reveal",
         PropKind::Boolean,
-        "Start collapsed to `revealSize` and open when the pointer enters, the way a dock edge does.",
+        "Start collapsed to `revealSize` and open when the pointer enters, the way a dock edge does. Works on every edge.",
     ),
     p(
         "revealSize",
         PropKind::Number,
-        "Width of the collapsed strip when `reveal` is set. Default 8.",
+        "Thickness of the collapsed strip when `reveal` is set. Default 8.",
     ),
     p(
         "revealDuration",
@@ -140,8 +140,16 @@ const PANEL: &[PropSpec] = &[
     p("alwaysOnTop", PropKind::Boolean, "Keep above other windows."),
     p("clickThrough", PropKind::Boolean, "Ignore all pointer input."),
     p("layer", PropKind::Integer, "Stacking order among the shell's own surfaces."),
-    p("anchorX", PropKind::Number, "Horizontal position when floating."),
-    p("anchorY", PropKind::Number, "Vertical position when floating."),
+    p(
+        "anchorX",
+        PropKind::Number,
+        "Where a top, bottom or floating panel narrower than the screen sits: 0 left, 0.5 centre (default), 1 right.",
+    ),
+    p(
+        "anchorY",
+        PropKind::Number,
+        "Where a side or floating panel shorter than the screen sits: 0 top, 0.5 centre (default), 1 bottom.",
+    ),
     p("name", PropKind::String, "A name for `shell.open(\"…\")`."),
     p(
         "hidden",

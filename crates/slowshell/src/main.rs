@@ -77,6 +77,13 @@ struct Reveal {
     /// Seconds to wait before closing.
     delay: f32,
     ease: slowshell_core::ease::Ease,
+    /// Whether the reveal grows the window's height (a top or bottom panel)
+    /// rather than its width (a side panel). `width` then holds the height.
+    grows_height: bool,
+    /// For a right or bottom panel, the coordinate of the edge against the
+    /// screen, which must stay put while the panel grows away from it. Without
+    /// it the panel grows *off* the screen and looks like it never opens.
+    far_edge: Option<i32>,
 }
 
 impl Reveal {
@@ -91,6 +98,8 @@ impl Reveal {
             close_at: None,
             delay,
             ease,
+            grows_height: false,
+            far_edge: None,
         }
     }
 
@@ -105,6 +114,12 @@ impl Reveal {
 
     fn schedule_close(&mut self, now: Instant) {
         self.close_at = Some(now + Duration::from_secs_f32(self.delay));
+    }
+
+    /// Open, or opening, with no close scheduled: the state that only a pointer
+    /// leaving can end.
+    fn is_held_open(&self) -> bool {
+        self.close_at.is_none() && self.tween.target() > self.collapsed as f32
     }
 
     fn retarget(&mut self, to: f32) {
@@ -231,6 +246,10 @@ struct App {
     started: Instant,
     /// Actions that need the frame loop, queued by their registry closures.
     deferred: Deferred,
+    /// Processor load is a difference between readings, so the last one is kept.
+    cpu: slowshell_win::sysinfo::CpuMeter,
+    /// One-second ticks since start, for the work done every few of them.
+    machine_ticks: u32,
 }
 
 impl App {
@@ -286,6 +305,8 @@ impl App {
             overlay: false,
             started: Instant::now(),
             deferred,
+            cpu: slowshell_win::sysinfo::CpuMeter::new(),
+            machine_ticks: 0,
         })
     }
 
@@ -367,7 +388,7 @@ impl App {
                     // Releasing the old window first also releases its app bar, so
                     // the space comes back before the new one claims any.
                     window::destroy(s.handle);
-                    match self.create_surface(panel, &compiled.theme) {
+                    match self.create_surface(panel, &compiled.theme, false) {
                         Ok(s) => self.surfaces.insert(i, s),
                         Err(e) => slowshell_core::error!("could not create surface {i}: {e}"),
                     }
@@ -379,10 +400,16 @@ impl App {
                 self.surfaces[i].needs_resize = true;
                 continue;
             }
-            match self.create_surface(panel, &compiled.theme) {
+            match self.create_surface(panel, &compiled.theme, false) {
                 Ok(s) => self.surfaces.push(s),
                 Err(e) => slowshell_core::error!("could not create surface {i}: {e}"),
             }
+        }
+        // A drawer's collapsed strip shares its edge with a `wrap` arm, and the
+        // arms are created last, so they land on top and swallow the hover that
+        // would open the drawer. Drawers go back above them.
+        for s in self.surfaces.iter().filter(|s| s.reveal.is_some()) {
+            window::raise(s.handle.hwnd);
         }
         // Surfaces may have been created or dropped, so the IPC thread needs the
         // new window list before the frame loop blocks on a stale one.
@@ -425,7 +452,7 @@ impl App {
                     .get(&screen)
                     .cloned()
                     .unwrap_or_else(|| self.monitors.primary().clone());
-                out.extend(wrap_arms(panel, &monitor, wrap_size, theme));
+                out.extend(wrap_arms(panel, &frame_monitor(&monitor), wrap_size, theme));
                 slowshell_core::info!(
                     "wrap: {position:?} on {} framed with {} arms",
                     monitor.id,
@@ -439,7 +466,15 @@ impl App {
 
     /// Default thickness of a `wrap` arm, in logical pixels.
 /// Work out where a panel goes and create its window.
-    fn create_surface(&mut self, panel: &Element, theme: &Theme) -> std::io::Result<SurfaceState> {
+    ///
+    /// `opening` is set when something asked for a `hidden: true` panel, so the
+    /// window is shown now rather than left hidden like a panel nobody asked for.
+    fn create_surface(
+        &mut self,
+        panel: &Element,
+        theme: &Theme,
+        opening: bool,
+    ) -> std::io::Result<SurfaceState> {
         let (position, screen, name, hidden, backdrop, exclusive) = match &panel.kind {
             slowshell_ui::ElementKind::Panel {
                 position, screen, name, hidden, backdrop, exclusive, ..
@@ -482,7 +517,19 @@ impl App {
         // point is to react to space something else has already claimed, and the
         // cached list predates every reservation this shell has made. Two
         // exclusive bars on one edge therefore land one above the other.
-        let placement_monitor = if exclusive {
+        // A wrapped bar and its arms are one frame, so they are measured from
+        // the same rectangle: the screen less Explorer's taskbar. The work
+        // area cannot be used for it, because it already has this shell's own
+        // bars taken out (or, after a restart, a stale copy of them), and a
+        // frame measured inside its own reservation leaves a gap the size of
+        // the frame at every corner.
+        let wraps = matches!(&panel.kind,
+            slowshell_ui::ElementKind::Panel { wrap: true, .. })
+            && position != Position::Floating
+            && !hidden;
+        let placement_monitor = if wraps {
+            frame_monitor(&monitor)
+        } else if exclusive {
             Monitors::enumerate()
                 .get(&screen)
                 .cloned()
@@ -503,12 +550,10 @@ impl App {
             monitor.width as f32
         };
 
-        // A revealing side panel spans the display the way a bar spans its width.
-        // Without this it sizes to its content, which makes the thing you hover a
-        // short stub in the middle of the edge instead of a strip you can find.
-        let reveals = matches!(&panel.kind,
-            slowshell_ui::ElementKind::Panel { reveal, .. } if *reveal);
-        let tall = reveals && position.is_vertical();
+        // A side panel spans the display's height the way a top bar spans its
+        // width. Sized to its content instead, a left bar is a short stub in the
+        // middle of the edge, and a revealing one is a strip nobody can find.
+        let tall = position.is_vertical() && declared_h.is_none();
         let span_h = placement_monitor.work_height as f32 / placement_monitor.scale;
 
         let lw = match declared_w {
@@ -530,6 +575,7 @@ impl App {
         // the panel then expands to exactly what it started at — which looks like
         // hover does nothing at all.
         let open_w = w;
+        let open_h = h;
 
         // A revealing panel starts as a thin strip on its edge. The window is
         // created at that width rather than being created wide and hidden, because
@@ -546,16 +592,19 @@ impl App {
             } => (*reveal, *reveal_size, *reveal_duration, *reveal_delay, *reveal_ease),
             _ => (false, 8.0, 0.18, 0.26, slowshell_core::ease::Ease::OutCubic),
         };
-        // Only a side edge can reveal this way. On `top` or `bottom` the panel's
-        // width is the display's, and collapsing it would leave a full-width gap
-        // in the middle of the desktop rather than a strip at the edge.
-        let revealable = reveal_spec.0 && position.is_vertical();
-        let collapsed_w = if revealable {
-            monitor.physical(reveal_spec.1.max(1.0)).max(2) as u32
-        } else {
-            w
+        // Any edge can reveal. A side panel collapses its width to the strip; a
+        // top or bottom one collapses its height, so hovering the top-centre of
+        // the screen can drop a dashboard down, the way Caelestia's does. A
+        // floating panel is against no edge, so there is no strip to hover.
+        let revealable = reveal_spec.0 && position != Position::Floating;
+        let strip = monitor.physical(reveal_spec.1.max(1.0)).max(2) as u32;
+        let grows_height = revealable && !position.is_vertical();
+        let collapsed_w = if revealable && !grows_height { strip.min(w) } else { w };
+        let collapsed_h = if grows_height { strip.min(h) } else { h };
+        let anchor = match &panel.kind {
+            slowshell_ui::ElementKind::Panel { anchor, .. } => *anchor,
+            _ => (0.5, 0.5),
         };
-        let collapsed_w = collapsed_w.min(w);
 
         // A wrap arm arrives with its rectangle already worked out: it is the
         // space *between* two edges rather than an edge strip, so no combination
@@ -572,19 +621,27 @@ impl App {
                 // narrowed to the strip below. The reveal grows it back towards
                 // the width it was placed for.
                 let (x, y) = if exclusive {
-                    position_exclusive(position, &placement_monitor, w, h)
+                    position_exclusive(position, &placement_monitor, w, h, anchor)
+                } else if revealable {
+                    // A drawer hugs the screen minus Explorer's taskbar only.
+                    // Inside the taskbar, which is topmost and would otherwise
+                    // cover a bottom drawer's strip; but on top of this shell's
+                    // own bar and frame, so the very edge pixel opens it. The
+                    // work area cannot be used for this: it already has the
+                    // frame taken out (or, after a restart, a stale copy of it),
+                    // which put the top drawer's strip 10px below the top where a
+                    // flick of the mouse skips straight over it.
+                    place_in(drawer_area(&monitor), position, w, h, anchor)
                 } else {
-                    position_of(position, &monitor, w, h)
+                    position_of(position, &monitor, w, h, anchor)
                 };
                 if revealable {
-                    // A left edge grows rightwards, so the strip stays at `x`. A
-                    // right edge grows leftwards, so its strip moves to the edge.
-                    let x = if position == Position::Right {
-                        x + (w - collapsed_w) as i32
-                    } else {
-                        x
-                    };
-                    (x, y, collapsed_w, h)
+                    // A left or top edge grows away from `x`/`y`, so the strip
+                    // stays there. A right or bottom edge grows back towards the
+                    // middle of the screen, so its strip moves to the edge.
+                    let x = if position == Position::Right { x + (w - collapsed_w) as i32 } else { x };
+                    let y = if position == Position::Bottom { y + (h - collapsed_h) as i32 } else { y };
+                    (x, y, collapsed_w, collapsed_h)
                 } else {
                     (x, y, w, h)
                 }
@@ -599,17 +656,24 @@ impl App {
             monitor.id,
             if arm { " (wrap arm)" } else { "" },
             if revealable {
-                format!(" (reveals from {collapsed_w}px)")
+                format!(" (reveals from {}px)", if grows_height { collapsed_h } else { collapsed_w })
             } else {
                 String::new()
             }
         );
 
         let handle = window::create_surface(SurfaceRole::Panel, x, y, w, h, "Slowshell")?;
+        // A panel draws its own corners (`radius`), so the system's are turned
+        // off: rounded, they leave gaps wherever two of the shell's windows meet.
+        slowshell_win::backdrop::square_corners(handle.hwnd);
         // The window must be visible before a render target is attached to it:
         // DXGI rejects a chain whose window has never been shown, and a window
         // render target presents nothing, both with a bare error code.
-        if !hidden {
+        //
+        // That includes a `hidden: true` panel being opened: showing it only after
+        // the render target exists gave a swap chain that never presented, so the
+        // power menu opened as an empty window on real hardware.
+        if !hidden || opening {
             window::show(handle.hwnd);
         }
 
@@ -669,12 +733,23 @@ impl App {
             name,
             anchor: panel_anchor(panel),
             reveal: if revealable {
-                let expanded = match explicit {
-                    Some((_, _, bw, _)) => bw,
-                    None => open_w.max(collapsed_w),
+                let (collapsed, expanded) = if grows_height {
+                    (collapsed_h, open_h.max(collapsed_h))
+                } else {
+                    let open = match explicit {
+                        Some((_, _, bw, _)) => bw,
+                        None => open_w,
+                    };
+                    (collapsed_w, open.max(collapsed_w))
                 };
-                slowshell_core::debug!("reveal: {expanded}px wide when open, {collapsed_w}px closed");
-                let mut r = Reveal::new(collapsed_w, expanded, reveal_spec.3, reveal_spec.4);
+                slowshell_core::debug!("reveal: {expanded}px when open, {collapsed}px closed");
+                let mut r = Reveal::new(collapsed, expanded, reveal_spec.3, reveal_spec.4);
+                r.grows_height = grows_height;
+                r.far_edge = match position {
+                    Position::Right => Some(x + w as i32),
+                    Position::Bottom => Some(y + h as i32),
+                    _ => None,
+                };
                 // Applied here rather than read per frame, so the configured
                 // duration is used and cannot quietly stop being one.
                 r.with_duration(reveal_spec.2);
@@ -707,6 +782,30 @@ impl App {
         s.needs_layout = true;
     }
 
+    /// Close any open reveal the pointer is no longer over.
+    ///
+    /// Leaving is normally reported by `WM_MOUSELEAVE`, but that message is not
+    /// guaranteed: a pointer that jumps (a tablet, a remote session, a window that
+    /// grew out from under it) can leave without one, and a drawer that missed it
+    /// would stay open for good. One cursor read per open drawer on the clock's
+    /// tick is the backstop.
+    fn close_abandoned_reveals(&mut self) {
+        let Some((cx, cy)) = window::cursor_pos() else {
+            return;
+        };
+        let now = Instant::now();
+        for s in &mut self.surfaces {
+            let Some(reveal) = s.reveal.as_mut() else {
+                continue;
+            };
+            let (x, y, w, h) = s.bounds;
+            let inside = cx >= x && cy >= y && cx < x + w as i32 && cy < y + h as i32;
+            if !inside && reveal.is_held_open() {
+                reveal.schedule_close(now);
+            }
+        }
+    }
+
     /// Advance every running reveal by `dt` seconds, and report whether anything
     /// still moving, so the frame loop knows to stay awake.
     ///
@@ -724,9 +823,19 @@ impl App {
                 moving = true;
             }
             if let Some(want) = reveal.advance(dt, now) {
-                s.bounds.2 = want;
-                let (x, y, _, h) = s.bounds;
-                window::set_bounds(s.handle.hwnd, x, y, want, h);
+                if reveal.grows_height {
+                    s.bounds.3 = want;
+                    if let Some(far) = reveal.far_edge {
+                        s.bounds.1 = far - want as i32;
+                    }
+                } else {
+                    s.bounds.2 = want;
+                    if let Some(far) = reveal.far_edge {
+                        s.bounds.0 = far - want as i32;
+                    }
+                }
+                let (x, y, w, h) = s.bounds;
+                window::set_bounds(s.handle.hwnd, x, y, w, h);
                 s.needs_resize = true;
                 s.needs_layout = true;
             }
@@ -783,6 +892,9 @@ impl App {
                 .runtime
                 .reactor
                 .set("windows.active.title", Value::str(title));
+
+            changed |= self.publish_machine();
+            self.close_abandoned_reveals();
         }
 
         // A stale derived value is recomputed lazily by the next layout pass, so
@@ -800,11 +912,63 @@ impl App {
         changed
     }
 
+    /// Battery, processor, memory, network, volume and Kerys, read on the
+    /// clock's one-second tick. Each is a non-blocking call; see
+    /// `slowshell_win::sysinfo` for why that beats a callback per provider.
+    fn publish_machine(&mut self) -> bool {
+        use slowshell_win::sysinfo;
+        let r = &self.runtime.reactor;
+        let mut changed = false;
+
+        let b = sysinfo::battery();
+        changed |= r.set("battery.present", Value::Bool(b.present));
+        changed |= r.set("battery.percentage", Value::Int(b.percentage));
+        changed |= r.set("battery.charging", Value::Bool(b.charging));
+        changed |= r.set("battery.plugged", Value::Bool(b.plugged));
+
+        if let Some(cpu) = self.cpu.sample() {
+            changed |= r.set("system.cpuUsage", Value::Int(cpu));
+        }
+        if let Some(mem) = sysinfo::memory_usage() {
+            changed |= r.set("system.memoryUsage", Value::Int(mem));
+        }
+
+        let net = sysinfo::network();
+        changed |= r.set("network.connected", Value::Bool(net.connected));
+        changed |= r.set("network.metered", Value::Bool(net.metered));
+
+        // A new default output device does not invalidate the old one while it
+        // is still plugged in, so the cached endpoint is let go every few
+        // seconds. Re-activating it is one COM call.
+        self.machine_ticks = self.machine_ticks.wrapping_add(1);
+        if self.machine_ticks % 5 == 0 {
+            sysinfo::refresh_audio_device();
+        }
+        let audio = sysinfo::volume();
+        changed |= r.set("audio.available", Value::Bool(audio.is_some()));
+        if let Some((level, muted)) = audio {
+            changed |= r.set("audio.volume", Value::Int(level));
+            changed |= r.set("audio.muted", Value::Bool(muted));
+        }
+
+        changed |= r.set("wm.running", Value::Bool(slowshell_win::wm::is_running()));
+
+        let kerys = slowshell_win::kerys::is_running();
+        changed |= r.set("kerys.running", Value::Bool(kerys));
+        if !kerys {
+            // A Kerys that exited cannot say so, and the next one starts in its
+            // default mode, so a stale "resize" would outlive it on the bar.
+            changed |= r.set("kerys.mode", Value::str("default"));
+        }
+        changed
+    }
+
     /// Lay out, paint and present one surface.
     fn draw(&mut self, i: usize) {
         let dpi = self.surfaces[i].surface_dpi();
         if self.surfaces[i].needs_resize {
-            if self.surfaces[i].surface.resize().is_ok() {
+            let (_, _, w, h) = self.surfaces[i].bounds;
+            if self.surfaces[i].surface.resize(w, h).is_ok() {
                 self.surfaces[i].needs_resize = false;
             }
         }
@@ -854,7 +1018,7 @@ impl App {
         );
         // Publish the interactive regions so `WM_NCHITTEST` can pass clicks
         // through the empty parts of the bar.
-        hit_test::set_regions(output.regions);
+        hit_test::set_regions(s.handle.id(), output.regions);
         let balanced = painter.is_balanced();
         let stats = painter.stats();
         drop(painter);
@@ -919,7 +1083,22 @@ impl App {
                 }
                 window::reserve_appbar_by_id(hwnd);
             }
-            WindowEvent::CloseRequested => self.running = false,
+            WindowEvent::CloseRequested => {
+                // Alt+F4 on a launcher means "close the launcher", not "quit the
+                // desktop". Only a bar, which nothing could reopen, stops the shell.
+                let popup = self
+                    .surfaces
+                    .iter()
+                    .find(|s| s.handle.id() == hwnd)
+                    .map(|s| s.name.clone())
+                    .filter(|name| self.can_close(name));
+                match popup {
+                    Some(name) => {
+                        let _ = self.close_surface(&name);
+                    }
+                    None => self.running = false,
+                }
+            }
             WindowEvent::Pointer(slowshell_win::InputEvent::Moved { .. }) => {
                 self.set_reveal_open(hwnd, true)
             }
@@ -930,8 +1109,16 @@ impl App {
                 self.set_reveal_open(hwnd, false)
             }
             WindowEvent::Pointer(slowshell_win::InputEvent::Pressed { x, y, button, .. }) => {
+                // The press is in physical pixels; the regions are logical.
+                let scale = self
+                    .surfaces
+                    .iter()
+                    .find(|s| s.handle.id() == hwnd)
+                    .map(|s| if s.monitor_scale > 0.0 { s.monitor_scale } else { 1.0 })
+                    .unwrap_or(1.0);
+                let (x, y) = (x / scale, y / scale);
                 if button == 0 {
-                    if let Some(id) = hit_test::region_at(x, y) {
+                    if let Some(id) = hit_test::region_at(hwnd, x, y) {
                         slowshell_core::debug!("click on element {id} at {x},{y}");
                         self.dispatch(id);
                     }
@@ -990,6 +1177,27 @@ impl App {
                         slowshell_core::warn!("`shell.open({arg0})`: {e}");
                     }
                 }
+                "shell.close" => {
+                    if let Err(e) = self.close_surface(&arg0) {
+                        slowshell_core::warn!("`shell.close({arg0})`: {e}");
+                    }
+                }
+                "shell.toggle" => {
+                    if let Err(e) = self.toggle_surface(&arg0) {
+                        slowshell_core::warn!("`shell.toggle({arg0})`: {e}");
+                    }
+                }
+                "wm.send" => match slowshell_win::wm::send(&arg0) {
+                    Ok(()) => {
+                        if let Some(ws) = slowshell_win::wm::workspace_of(&arg0) {
+                            self.runtime.reactor.set("wm.workspace", Value::str(ws));
+                            for s in &mut self.surfaces {
+                                s.needs_layout = true;
+                            }
+                        }
+                    }
+                    Err(e) => slowshell_core::warn!("`wm.send({arg0})`: {e}"),
+                },
                 other => slowshell_core::warn!("`{other}` was queued but nothing can carry it out"),
             }
         }
@@ -1022,17 +1230,62 @@ impl App {
             ));
         };
         let mut state =
-            self.create_surface(&panel, &self.runtime.theme()).map_err(|e| e.to_string())?;
-        // `create_surface` honours the panel's `hidden: true` and leaves the
-        // window unshown, which is right for a panel nobody has asked for and
-        // wrong for this one. The caller asking for it *is* the ask.
-        window::show(state.handle.hwnd);
+            self.create_surface(&panel, &self.runtime.theme(), true).map_err(|e| e.to_string())?;
         state.needs_layout = true;
         self.surfaces.push(state);
         // Surfaces changed, so the IPC thread needs the new window list.
         self.sync_windows();
         slowshell_core::info!("opened surface `{name}`");
         Ok(())
+    }
+
+    /// Whether a named surface is open and may be closed.
+    ///
+    /// Only panels declared `hidden: true` qualify: they are the ones `shell.open`
+    /// can build again. Closing a bar would leave nothing that could bring it
+    /// back short of a reload.
+    fn can_close(&self, name: &str) -> bool {
+        !name.is_empty()
+            && self.runtime.hidden_panel(name).is_some()
+            && self.surfaces.iter().any(|s| s.name == name)
+    }
+
+    /// Close a named surface that `shell.open` opened.
+    ///
+    /// The window is destroyed rather than hidden, so a closed launcher costs
+    /// exactly what a never-opened one does: nothing.
+    fn close_surface(&mut self, name: &str) -> Result<(), String> {
+        if self.runtime.hidden_panel(name).is_none() {
+            return Err(if self.surfaces.iter().any(|s| s.name == name) {
+                format!("`{name}` is not declared `hidden: true`, so nothing could reopen it")
+            } else {
+                format!("no panel named `{name}` is declared")
+            });
+        }
+        let Some(index) = self.surfaces.iter().position(|s| s.name == name) else {
+            // Already closed is the state the caller asked for.
+            return Ok(());
+        };
+        let state = self.surfaces.remove(index);
+        window::destroy(state.handle);
+        self.sync_windows();
+        slowshell_core::info!("closed surface `{name}`");
+        Ok(())
+    }
+
+    /// Open a named surface if it is closed, close it if it is open. What a
+    /// hotkey for a launcher wants.
+    fn toggle_surface(&mut self, name: &str) -> Result<(), String> {
+        if self.surfaces.iter().any(|s| s.name == name) {
+            self.close_surface(name)
+        } else {
+            self.open_surface(name)
+        }
+    }
+
+    /// Whether a surface of this name is currently on screen.
+    fn is_open(&self, name: &str) -> bool {
+        self.surfaces.iter().any(|s| s.name == name)
     }
 
     /// Answer one `shellctl` request.
@@ -1205,6 +1458,46 @@ impl App {
                     Err(e) => Response::err(e),
                 }
             }
+            Request::Close { name } => match self.close_surface(&name) {
+                Ok(()) => Response::ok(serde_json::json!({ "closed": name })),
+                Err(e) => Response::err(e),
+            },
+            Request::Toggle { name } => {
+                if !self.can_open(&name) {
+                    return Response::err(format!(
+                        "no panel named `{name}` is declared. Add `name: \"{name}\" hidden: true` \
+                         to a Panel, or check the name."
+                    ));
+                }
+                match self.toggle_surface(&name) {
+                    Ok(()) => Response::ok(serde_json::json!({
+                        "name": name,
+                        "open": self.is_open(&name),
+                    })),
+                    Err(e) => Response::err(e),
+                }
+            }
+            Request::Set { key, value } => {
+                // Only namespaces that belong to an outside program are writable.
+                // `battery.percentage` is the shell's to report; a script that
+                // could overwrite it would make the bar lie.
+                if !slowshell_core::ipc::is_external_key(&key) {
+                    return Response::err(format!(
+                        "`{key}` cannot be set from outside the shell. Writable keys start with {}.",
+                        slowshell_core::ipc::EXTERNAL_PREFIXES.join(", ")
+                    ));
+                }
+                if self.runtime.reactor.lookup(&key).is_none() {
+                    return Response::err(format!("`{key}` is not a known value"));
+                }
+                let changed = self.runtime.reactor.set(&key, Value::from_json(&value));
+                if changed {
+                    for s in &mut self.surfaces {
+                        s.needs_layout = true;
+                    }
+                }
+                Response::ok(serde_json::json!({ "key": key, "changed": changed }))
+            }
         }
     }
 
@@ -1301,7 +1594,17 @@ impl App {
             let now = Instant::now();
             let until = self.next_clock.saturating_duration_since(now);
             let until = until.clamp(Duration::from_millis(4), Duration::from_millis(1_000));
-            window::wait(until.as_millis() as u32, |_, _| {});
+            //
+            // The wait drains whatever woke it, so those events are handled
+            // here. Handing it a closure that ignored them threw away every
+            // click and hover that arrived while the shell was idle, which is
+            // nearly all of them: buttons did nothing and a hover menu opened
+            // only when the pointer happened to move during a frame.
+            let mut events: Vec<(isize, WindowEvent)> = Vec::new();
+            window::wait(until.as_millis() as u32, |hwnd, ev| events.push((hwnd, ev)));
+            for (hwnd, ev) in events {
+                self.handle_event(hwnd, ev);
+            }
         }
         for s in self.surfaces.drain(..) {
             window::destroy(s.handle);
@@ -1444,13 +1747,24 @@ fn wrap_arms(
 
     // The two side arms run between the bar and the opposite arm, so the four
     // rectangles meet corner to corner with no overlap and no gap.
+    //
+    // Each arm is labelled with the edge it really sits on, because that label
+    // is what it reserves against. For a side bar the "side" arms are the top
+    // and bottom strips: calling them left and right asked Windows for an
+    // 1858-pixel-wide left app bar, which wrecked the work area for every bar,
+    // so maximised windows went straight under the bar again.
     if band > 0 {
-        for edge in [Position::Left, Position::Right] {
+        let (near, far) = if horizontal {
+            (Position::Left, Position::Right)
+        } else {
+            (Position::Top, Position::Bottom)
+        };
+        for edge in [near, far] {
             let (x, y, w, h) = if horizontal {
-                let x = if edge == Position::Left { wx } else { wx + ww - t };
+                let x = if edge == near { wx } else { wx + ww - t };
                 (x, wy + band_lo, t, band)
             } else {
-                let y = if edge == Position::Left { wy } else { wy + wh - t };
+                let y = if edge == near { wy } else { wy + wh - t };
                 (wx + band_lo, y, band, t)
             };
             arms.push((edge, x, y, w, h));
@@ -1513,6 +1827,7 @@ fn wrap_arm_element(
             reveal_duration: 0.18,
             reveal_delay: 0.26,
             reveal_ease: slowshell_core::ease::Ease::OutCubic,
+            anchor: (0.0, 0.0),
             name,
             hidden,
             backdrop,
@@ -1616,6 +1931,36 @@ fn register_actions(runtime: &mut Runtime, deferred: Deferred) {
         },
     );
     let queue = deferred.clone();
+    a.register(
+        "shell.close",
+        "Close a surface that `shell.open` opened.",
+        &["name"],
+        move |args| {
+            queue.borrow_mut().push(("shell.close".into(), args.to_vec()));
+            Ok(args[0].clone())
+        },
+    );
+    let queue = deferred.clone();
+    a.register(
+        "shell.toggle",
+        "Open a named surface if it is closed, close it if it is open.",
+        &["name"],
+        move |args| {
+            queue.borrow_mut().push(("shell.toggle".into(), args.to_vec()));
+            Ok(args[0].clone())
+        },
+    );
+    let queue = deferred.clone();
+    a.register(
+        "wm.send",
+        "Send a command to rustWM, such as \"workspace 3\" or \"focus left\".",
+        &["command"],
+        move |args| {
+            queue.borrow_mut().push(("wm.send".into(), args.to_vec()));
+            Ok(args[0].clone())
+        },
+    );
+    let queue = deferred.clone();
     a.register("shell.stop", "Quit the shell.", &[], move |_| {
         queue.borrow_mut().push(("shell.stop".into(), Vec::new()));
         Ok(Value::str("stopping"))
@@ -1695,27 +2040,61 @@ fn declared_size(panel: &Element) -> (Option<f32>, Option<f32>) {
 }
 
 /// Where a non-exclusive panel goes for a given edge.
-fn position_of(position: Position, m: &Monitor, w: u32, h: u32) -> (i32, i32) {
+fn position_of(position: Position, m: &Monitor, w: u32, h: u32, anchor: (f32, f32)) -> (i32, i32) {
+    place_in((m.x, m.y, m.width, m.height), position, w, h, anchor)
+}
+
+/// `m` with its work area replaced by [`drawer_area`], for laying out a frame.
+fn frame_monitor(m: &Monitor) -> Monitor {
+    let mut f = m.clone();
+    let (x, y, w, h) = drawer_area(m);
+    f.work_x = x;
+    f.work_y = y;
+    f.work_width = w;
+    f.work_height = h;
+    f
+}
+
+/// The monitor's rectangle less Explorer's taskbar, if the taskbar is on it.
+fn drawer_area(m: &Monitor) -> (i32, i32, u32, u32) {
+    let (mut l, mut t, mut r, mut b) = (m.x, m.y, m.x + m.width as i32, m.y + m.height as i32);
+    if let Some((edge, (tl, tt, tr, tb))) = slowshell_win::appbar::taskbar() {
+        let overlaps = tl < r && tr > l && tt < b && tb > t;
+        if overlaps {
+            match edge {
+                slowshell_win::appbar::Edge::Top => t = t.max(tb),
+                slowshell_win::appbar::Edge::Bottom => b = b.min(tt),
+                slowshell_win::appbar::Edge::Left => l = l.max(tr),
+                slowshell_win::appbar::Edge::Right => r = r.min(tl),
+                slowshell_win::appbar::Edge::None => {}
+            }
+        }
+    }
+    (l, t, (r - l).max(1) as u32, (b - t).max(1) as u32)
+}
+
+/// Place a `w`×`h` panel against `position`'s edge of `area`, sliding it along
+/// that edge by `anchor` when it is shorter than the edge: 0 is the start, 0.5
+/// the middle, 1 the end. A panel as long as the edge ignores it.
+fn place_in(area: (i32, i32, u32, u32), position: Position, w: u32, h: u32, anchor: (f32, f32)) -> (i32, i32) {
+    let (ax, ay, aw, ah) = area;
+    let along_x = ax + ((aw as i32 - w as i32).max(0) as f32 * anchor.0).round() as i32;
+    let along_y = ay + ((ah as i32 - h as i32).max(0) as f32 * anchor.1).round() as i32;
     match position {
-        Position::Top => (m.x, m.y),
-        Position::Bottom => (m.x, m.y + m.height as i32 - h as i32),
-        Position::Left => (m.x, m.y),
-        Position::Right => (m.x + m.width as i32 - w as i32, m.y),
-        // A floating panel has no anchor yet; the centre is the least surprising
-        // default until `anchorX`/`anchorY` are implemented.
-        Position::Floating => (m.x + (m.width as i32 - w as i32) / 2, m.y + (m.height as i32 - h as i32) / 2),
+        Position::Top => (along_x, ay),
+        Position::Bottom => (along_x, ay + ah as i32 - h as i32),
+        Position::Left => (ax, along_y),
+        Position::Right => (ax + aw as i32 - w as i32, along_y),
+        Position::Floating => (along_x, along_y),
     }
 }
 
 /// Where an exclusive panel sits: against the work-area edge on that side.
-fn position_exclusive(position: Position, m: &Monitor, w: u32, h: u32) -> (i32, i32) {
+fn position_exclusive(position: Position, m: &Monitor, w: u32, h: u32, anchor: (f32, f32)) -> (i32, i32) {
     match position {
-        Position::Top => (m.work_x, m.work_y),
-        Position::Bottom => (m.work_x, m.work_y + m.work_height as i32 - h as i32),
-        Position::Left => (m.work_x, m.work_y),
-        Position::Right => (m.work_x + m.work_width as i32 - w as i32, m.work_y),
         // A floating panel reserves nothing, so there is no edge to hug.
-        Position::Floating => position_of(position, m, w, h),
+        Position::Floating => position_of(position, m, w, h, anchor),
+        _ => place_in((m.work_x, m.work_y, m.work_width, m.work_height), position, w, h, anchor),
     }
 }
 
@@ -2041,6 +2420,7 @@ mod tests {
                 reveal_duration: 0.18,
                 reveal_delay: 0.26,
                 reveal_ease: slowshell_core::ease::Ease::OutCubic,
+                anchor: (0.5, 0.5),
                 name: String::new(),
                 hidden: false,
                 backdrop: slowshell_win::Backdrop::None,
@@ -2120,17 +2500,17 @@ mod tests {
             work_height: 1032,
         };
         // A 40px bar at the bottom sits above the 48px taskbar, not on it.
-        assert_eq!(position_exclusive(Position::Bottom, &m, 1920, 40), (0, 992));
+        assert_eq!(position_exclusive(Position::Bottom, &m, 1920, 40, (0.5, 0.5)), (0, 992));
         // And spans the work area, so it does not run under a side taskbar.
-        assert_eq!(position_exclusive(Position::Top, &m, 1920, 48), (0, 0));
+        assert_eq!(position_exclusive(Position::Top, &m, 1920, 48, (0.5, 0.5)), (0, 0));
         // A floating panel reserves nothing and hugs no edge.
         assert_eq!(
-            position_exclusive(Position::Floating, &m, 100, 40),
+            position_exclusive(Position::Floating, &m, 100, 40, (0.5, 0.5)),
             (910, 520)
         );
         // A non-exclusive panel is unaffected: it keeps the screen-edge anchor,
         // because it reserves nothing and so has nothing to stay clear of.
-        assert_eq!(position_of(Position::Bottom, &m, 1920, 40), (0, 1040));
+        assert_eq!(position_of(Position::Bottom, &m, 1920, 40, (0.5, 0.5)), (0, 1040));
     }
 
     #[test]
@@ -2152,7 +2532,7 @@ mod tests {
             work_width: 1920,
             work_height: 1080,
         };
-        let (_, y) = position_exclusive(Position::Bottom, &m, 1920, 40);
+        let (_, y) = position_exclusive(Position::Bottom, &m, 1920, 40, (0.5, 0.5));
         assert!(y >= 0 && y + 40 <= 1080, "bar at y={y} is off screen");
     }
 
@@ -2277,6 +2657,25 @@ mod tests {
     }
 
     #[test]
+    fn every_arm_reserves_against_the_edge_it_sits_on() {
+        // An arm's position is the edge its app bar reserves. A strip along the
+        // top labelled `Left` asks for a left bar as wide as the screen.
+        let m = monitor_with_work_area(1032);
+        for edge in ["top", "bottom", "left", "right"] {
+            for (p, (x, y, w, h)) in arm_bounds(&wrap_arms(&wrapped(edge, 40.0), &m, None, &Theme::default())) {
+                let expect = match p {
+                    Position::Top => y == 0 && w > h,
+                    Position::Bottom => y + h as i32 == 1032 && w > h,
+                    Position::Left => x == 0 && h > w,
+                    Position::Right => x + w as i32 == 1920 && h > w,
+                    Position::Floating => false,
+                };
+                assert!(expect, "{edge} bar: arm labelled {p:?} is at {x},{y} {w}x{h}");
+            }
+        }
+    }
+
+    #[test]
     fn a_floating_panel_has_nothing_to_wrap_around() {
         let m = monitor_with_work_area(1032);
         assert!(
@@ -2303,6 +2702,18 @@ mod tests {
     // -- reveal --------------------------------------------------------------
 
     use slowshell_core::ease::Ease;
+
+    #[test]
+    fn an_anchor_slides_a_short_panel_along_its_edge() {
+        let area = (0, 0, 1000, 800);
+        // A dashboard hanging from the top centre, as Caelestia's does.
+        assert_eq!(place_in(area, Position::Top, 400, 300, (0.5, 0.5)), (300, 0));
+        assert_eq!(place_in(area, Position::Bottom, 400, 60, (1.0, 0.5)), (600, 740));
+        assert_eq!(place_in(area, Position::Right, 200, 400, (0.5, 0.5)), (800, 200));
+        assert_eq!(place_in(area, Position::Left, 50, 800, (0.5, 0.0)), (0, 0));
+        // A panel as long as its edge ignores the anchor.
+        assert_eq!(place_in(area, Position::Top, 1000, 40, (1.0, 1.0)), (0, 0));
+    }
 
     fn reveal() -> Reveal {
         let mut r = Reveal::new(8, 210, 0.26, Ease::OutCubic);

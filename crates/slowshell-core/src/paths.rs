@@ -111,7 +111,10 @@ pub fn resolve_relative(root: &Path, rel: &str) -> PathBuf {
 mod tests {
     use super::*;
 
+    // Both of these are statements about Windows paths: `%APPDATA%` and
+    // backslash separators mean nothing elsewhere.
     #[test]
+    #[cfg(windows)]
     fn config_root_is_absolute_and_ends_in_slowshell() {
         let r = config_root();
         assert!(r.is_absolute(), "config root must be absolute, got {r:?}");
@@ -133,6 +136,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn relative_resolution_handles_forward_slashes() {
         let root = PathBuf::from(r"C:\cfg");
         assert_eq!(

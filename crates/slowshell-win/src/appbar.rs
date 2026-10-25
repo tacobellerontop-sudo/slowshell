@@ -250,6 +250,20 @@ impl AppBar {
                 right: rect.2,
                 bottom: rect.3,
             };
+            // Ask first, as the documentation and every working app bar (yasb,
+            // the taskbar itself) do: `ABM_QUERYPOS` moves the rectangle off any
+            // bar already on this edge, and the bar's thickness is then
+            // re-applied from the edge Windows chose. Going straight to
+            // `ABM_SETPOS` can be accepted without the work area moving.
+            SHAppBarMessage(ABM_QUERYPOS, &mut data);
+            let (w, h) = (rect.2 - rect.0, rect.3 - rect.1);
+            match self.edge {
+                Edge::Top => data.rc.bottom = data.rc.top + h,
+                Edge::Bottom => data.rc.top = data.rc.bottom - h,
+                Edge::Left => data.rc.right = data.rc.left + w,
+                Edge::Right => data.rc.left = data.rc.right - w,
+                Edge::None => {}
+            }
             let ok = SHAppBarMessage(ABM_SETPOS, &mut data);
             slowshell_core::debug!(
                 "ABM_SETPOS {:?} on the {} edge returned {ok}",
@@ -449,6 +463,24 @@ fn blank(hwnd: HWND) -> APPBARDATA {
         rc: RECT::default(),
         lParam: LPARAM(0),
     }
+}
+
+/// Explorer's taskbar: the edge it is on and its rectangle, in physical pixels.
+pub fn taskbar() -> Option<(Edge, (i32, i32, i32, i32))> {
+    let mut data = blank(HWND(std::ptr::null_mut()));
+    // SAFETY: fills a caller-owned struct whose size field is set.
+    if unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut data) } == 0 {
+        return None;
+    }
+    let edge = match data.uEdge {
+        ABE_TOP => Edge::Top,
+        ABE_BOTTOM => Edge::Bottom,
+        ABE_LEFT => Edge::Left,
+        ABE_RIGHT => Edge::Right,
+        _ => return None,
+    };
+    let r = data.rc;
+    Some((edge, (r.left, r.top, r.right, r.bottom)))
 }
 
 /// Every app bar Windows has registered, with the edge **it** reports.

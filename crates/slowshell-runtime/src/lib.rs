@@ -203,12 +203,29 @@ impl Runtime {
         seed(&self.reactor, "battery.percentage", 0);
         seed(&self.reactor, "battery.charging", false);
         seed(&self.reactor, "battery.present", false);
-        seed(&self.reactor, "network.connected", true);
-        seed(&self.reactor, "network.wifi", true);
+        seed(&self.reactor, "battery.plugged", false);
+        // The seeds say "nothing known", never a plausible reading: the shell
+        // publishes the real values on its first tick, and a bar that briefly
+        // claimed WiFi it does not have would be lying.
+        seed(&self.reactor, "network.connected", false);
+        seed(&self.reactor, "network.metered", false);
+        // Not published yet: telling WiFi from Ethernet, and throughput, both
+        // need per-adapter enumeration. They stay seeded so old configs build.
+        seed(&self.reactor, "network.wifi", false);
         seed(&self.reactor, "network.download", 0);
         seed(&self.reactor, "network.upload", 0);
-        seed(&self.reactor, "audio.volume", 50);
+        seed(&self.reactor, "audio.volume", 0);
         seed(&self.reactor, "audio.muted", false);
+        seed(&self.reactor, "audio.available", false);
+        // Kerys, the hotkey daemon. `kerys.mode` is pushed by Kerys itself over
+        // the control pipe (`{"cmd":"set","key":"kerys.mode",...}`); the shell
+        // only checks whether Kerys is running.
+        seed(&self.reactor, "kerys.running", false);
+        seed(&self.reactor, "kerys.mode", "default");
+        // rustWM. `wm.workspace` is set when the shell switches workspace, and
+        // rustWM or Kerys can push it with `{"cmd":"set","key":"wm.workspace"}`.
+        seed(&self.reactor, "wm.running", false);
+        seed(&self.reactor, "wm.workspace", "1");
         // Now playing, from the SMTC global session manager. Backed for real by
         // `slowshell_win::media`; seeded here so a config that reads `media.title`
         // compiles on a machine where nothing is playing, and shows nothing rather
@@ -218,12 +235,12 @@ impl Runtime {
         seed(&self.reactor, "media.status", "");
         seed(&self.reactor, "media.app", "");
         seed(&self.reactor, "media.playing", false);
+        seed(&self.reactor, "system.cpuUsage", 0);
+        seed(&self.reactor, "system.memoryUsage", 0);
         // Virtual desktops: Windows has no supported way to enumerate or switch
         // them, so these stay seeded and are not published. They are kept only so
         // an old config that reads them still compiles. See
         // docs/WINDOWS_API.md - do not build a workspace indicator on these.
-        seed(&self.reactor, "system.cpuUsage", 0);
-        seed(&self.reactor, "system.memoryUsage", 0);
         seed(&self.reactor, "windows.active.title", "");
         seed(&self.reactor, "windows.active.process", "");
         seed(&self.reactor, "virtualDesktops.count", 1);
@@ -858,6 +875,8 @@ mod tests {
             "network.connected",
             "audio.volume",
             "system.cpuUsage",
+            "kerys.mode",
+            "kerys.running",
         ] {
             assert!(rt.reactor.lookup(path).is_some(), "missing seeded source {path}");
         }

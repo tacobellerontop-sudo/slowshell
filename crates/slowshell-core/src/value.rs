@@ -298,6 +298,27 @@ impl Value {
             Value::Callable(c) => J::String(format!("<callable {}>", c.name)),
         }
     }
+
+    /// The inverse of [`Value::to_json`], for values that arrive over IPC.
+    ///
+    /// A whole number stays an `Int`, so `shellctl set` with `3` compares equal
+    /// to a config literal `3` rather than to `3.0`.
+    pub fn from_json(json: &serde_json::Value) -> Value {
+        use serde_json::Value as J;
+        match json {
+            J::Null => Value::Null,
+            J::Bool(b) => Value::Bool(*b),
+            J::Number(n) => match n.as_i64() {
+                Some(i) => Value::Int(i),
+                None => Value::Float(n.as_f64().unwrap_or(0.0)),
+            },
+            J::String(s) => Value::str(s),
+            J::Array(items) => Value::list(items.iter().map(Value::from_json).collect()),
+            J::Object(m) => Value::map(
+                m.iter().map(|(k, v)| (k.clone(), Value::from_json(v))).collect(),
+            ),
+        }
+    }
 }
 
 /// Trim float noise so `50.0` prints as `50` but `50.5` keeps its fraction.
@@ -379,6 +400,14 @@ impl fmt::Display for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_round_trips_through_a_value() {
+        let json = serde_json::json!({"mode": "resize", "n": 3, "f": 1.5, "on": true, "l": [1, null]});
+        let v = Value::from_json(&json);
+        assert_eq!(v.to_json(), json);
+        assert_eq!(Value::from_json(&serde_json::json!(3)), Value::Int(3));
+    }
 
     #[test]
     fn truthiness_matches_scripting_expectations() {

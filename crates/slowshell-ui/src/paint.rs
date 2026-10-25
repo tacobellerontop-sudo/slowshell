@@ -131,6 +131,15 @@ fn node(
         out.skipped += 1;
         return;
     }
+    // `rect` is the content box. The background, border, shadow and click target
+    // belong to the padding box around it: drawn on the content box, a padded
+    // pill or card was painted tight around its text with the padding left bare.
+    let boxed = Rect::new(
+        rect.x - style.padding.left,
+        rect.y - style.padding.top,
+        rect.w + style.padding.horizontal(),
+        rect.h + style.padding.vertical(),
+    );
 
     // Opacity composes, so it needs a layer rather than a colour scale.
     let needs_layer = values.opacity < 1.0;
@@ -141,7 +150,7 @@ fn node(
     if let Some(shadow) = style.shadow {
         if shadow.color.a > 0 {
             painter.draw_shadow(
-                to_win(rect),
+                to_win(boxed),
                 style.radius,
                 slowshell_win::Shadow {
                     color: shadow.color,
@@ -152,9 +161,9 @@ fn node(
         }
     }
 
-    let background = e.background(theme);
+    let background = dynamic_color(values.background.as_deref(), theme).unwrap_or_else(|| e.background(theme));
     if background.a > 0 && !matches!(e.kind, ElementKind::Spacer) {
-        painter.fill_rect(to_win(rect), background, style.radius);
+        painter.fill_rect(to_win(boxed), background, style.radius);
     }
 
     if style.border_width > 0.0 {
@@ -163,7 +172,7 @@ fn node(
             // Inset by half the stroke so the border sits inside the bounds.
             let half = style.border_width / 2.0;
             painter.stroke_rect(
-                to_win(rect).inset(half, half),
+                to_win(boxed).inset(half, half),
                 border,
                 (style.radius - half).max(0.0),
                 style.border_width,
@@ -174,10 +183,10 @@ fn node(
     // Publish the hit region before children, so a child can override it.
     if e.interactive.get() {
         out.regions.push(HitRegion {
-            x: rect.x,
-            y: rect.y,
-            w: rect.w,
-            h: rect.h,
+            x: boxed.x,
+            y: boxed.y,
+            w: boxed.w,
+            h: boxed.h,
             id: e.id.0,
             layer: 0,
             interactive: true,
@@ -201,6 +210,14 @@ fn node(
     }
 }
 
+/// A colour that an expression produced: a theme token such as `"accent"`, or a
+/// literal such as `"#541d34"`. `None` when there is no expression, or it gave
+/// something that is neither, so the element's static colour applies.
+fn dynamic_color(value: Option<&str>, theme: &Theme) -> Option<Color> {
+    let value = value?.trim();
+    theme.get(value).or_else(|| Color::parse(value))
+}
+
 fn draw_content(
     painter: &mut Painter,
     e: &Element,
@@ -209,7 +226,7 @@ fn draw_content(
     style: &crate::Style,
     rect: Rect,
 ) {
-    let color = e.foreground(theme);
+    let color = dynamic_color(values.color.as_deref(), theme).unwrap_or_else(|| e.foreground(theme));
     match &e.kind {
         // Text and Clock are both "draw a string", and the string comes from the
         // same place layout measured, so what is drawn always fits what was

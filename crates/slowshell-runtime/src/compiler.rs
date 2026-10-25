@@ -390,6 +390,10 @@ impl Compiler<'_> {
                 reveal_ease: get_str("revealEase")
                     .map(|s| slowshell_core::ease::Ease::parse(&s))
                     .unwrap_or(slowshell_core::ease::Ease::OutCubic),
+                anchor: (
+                    get_num("anchorX").unwrap_or(0.5).clamp(0.0, 1.0),
+                    get_num("anchorY").unwrap_or(0.5).clamp(0.0, 1.0),
+                ),
                 name: get_str("name").unwrap_or_default(),
                 hidden: get_bool("hidden"),
                 backdrop: get_str("backdrop")

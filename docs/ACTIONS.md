@@ -47,10 +47,14 @@ pass was walking it would be a use-after-free rather than a feature.
 | `shell.stop()` | Quit the shell. |
 | `shell.overlay()` | Show or hide the developer error overlay. |
 | `shell.open(name)` | Open a named surface, e.g. `"launcher"`. |
+| `shell.close(name)` | Close it again. The window is destroyed, so a closed launcher costs nothing. |
+| `shell.toggle(name)` | Open it if closed, close it if open. What a hotkey wants. |
 
 `shell.open` is the launcher mechanism. It builds the window for a panel
-declared `hidden: true`, and re-shows it if it is already open. A name that is
-not declared is an error naming what to add:
+declared `hidden: true`, and re-shows it if it is already open. Only panels declared
+`hidden: true` can be closed, because those are the ones `shell.open` can build
+again. Alt+F4 on one of them closes just that panel; on a bar it still quits the
+shell. A name that is not declared is an error naming what to add:
 
 ```
 $ shellctl open nope
@@ -141,18 +145,43 @@ does, and it is not in the Action Center.
 | `audio.raise()` | Raise by five. |
 | `audio.lower()` | Lower by five. |
 
-**The limitation, stated plainly:** these write the volume and cannot read it
-back. There is no "what is the volume" API on Windows that does not need a full
-audio endpoint enumeration on a timer, and a timer is exactly the thing the idle
-budget forbids. So the shell remembers what it last set and applies changes as
-multimedia key presses.
-
-That is coarse — `setVolume(37)` steps to the nearest multiple of twelve and is
-honest about being approximate. A config that needs a live volume *gauge* cannot
-have one from these actions. A config that needs a mute *button* can.
+These act on the default output device through `IAudioEndpointVolume`, the
+same object `audio.volume` and `audio.muted` are read from, so a volume widget
+shows exactly what it set. With no output device they fail with "no audio output
+device", and `audio.available` reads `false`.
 
 An out-of-range level is refused rather than clamped, because clamping would hide
 a config that says `1000`, which is a mistake worth seeing.
+
+---
+
+## Kerys
+
+[Kerys](https://github.com/tacobellerontop-sudo/kerys) is the hotkey daemon
+for rustWM. These control it the way its own command line does; see
+[KERYS.md](KERYS.md) for the other direction, Kerys driving the shell.
+
+| Action | Does |
+|---|---|
+| `kerys.start()` | Run `kerys start`, unless Kerys is already running. |
+| `kerys.stop()` | Ask a running Kerys to quit, as `kerys stop` does. |
+| `kerys.toggle()` | Stop it if running, start it otherwise. |
+| `kerys.settings()` | Open the Kerys keybinding editor (`kerys gui`). |
+
+`kerys.exe` is found on `PATH`.
+
+---
+
+## rustWM
+
+| Action | Does |
+|---|---|
+| `wm.send("workspace 3")` | Send one command to rustWM over `\\.\pipe\rustwm`, the same string `rwm workspace 3` sends. |
+
+No `rwm.exe` is needed on `PATH`. A `workspace N` command also sets
+`wm.workspace` to `N`, so a bar can highlight the current workspace;
+`wm.running` says whether rustWM's pipe exists. rustWM or Kerys can push
+`wm.workspace` themselves with `shellctl set wm.workspace 3`.
 
 ---
 
@@ -236,9 +265,10 @@ broken.config:2:23
 
 A handler is a call. `onClick: launcher.toggle()` is correct; `onClick: "launcher.toggle"` is a string and never runs.
 Registered actions: audio.lower, audio.mute, audio.raise, audio.setVolume, audio.toggleMute,
-  clipboard.get, clipboard.set, exec.run, keys.send, launch, notify, screens.list,
-  shell.open, shell.overlay, shell.reload, shell.stop, system.restart, system.shutdown,
-  windows.lock, windows.minimiseAll
+  clipboard.get, clipboard.set, exec.run, kerys.settings, kerys.start, kerys.stop,
+  kerys.toggle, keys.send, launch, notify, screens.list, shell.close, shell.open,
+  shell.overlay, shell.reload, shell.stop, shell.toggle, system.restart, system.shutdown,
+  windows.lock, windows.minimiseAll, wm.send
 ```
 
 A misspelling gets a "did you mean" when something is genuinely close. When
