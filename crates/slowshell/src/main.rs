@@ -452,7 +452,7 @@ impl App {
                     .get(&screen)
                     .cloned()
                     .unwrap_or_else(|| self.monitors.primary().clone());
-                out.extend(wrap_arms(panel, &monitor, wrap_size, theme));
+                out.extend(wrap_arms(panel, &frame_monitor(&monitor), wrap_size, theme));
                 slowshell_core::info!(
                     "wrap: {position:?} on {} framed with {} arms",
                     monitor.id,
@@ -517,7 +517,19 @@ impl App {
         // point is to react to space something else has already claimed, and the
         // cached list predates every reservation this shell has made. Two
         // exclusive bars on one edge therefore land one above the other.
-        let placement_monitor = if exclusive {
+        // A wrapped bar and its arms are one frame, so they are measured from
+        // the same rectangle: the screen less Explorer's taskbar. The work
+        // area cannot be used for it, because it already has this shell's own
+        // bars taken out (or, after a restart, a stale copy of them), and a
+        // frame measured inside its own reservation leaves a gap the size of
+        // the frame at every corner.
+        let wraps = matches!(&panel.kind,
+            slowshell_ui::ElementKind::Panel { wrap: true, .. })
+            && position != Position::Floating
+            && !hidden;
+        let placement_monitor = if wraps {
+            frame_monitor(&monitor)
+        } else if exclusive {
             Monitors::enumerate()
                 .get(&screen)
                 .cloned()
@@ -2030,6 +2042,17 @@ fn declared_size(panel: &Element) -> (Option<f32>, Option<f32>) {
 /// Where a non-exclusive panel goes for a given edge.
 fn position_of(position: Position, m: &Monitor, w: u32, h: u32, anchor: (f32, f32)) -> (i32, i32) {
     place_in((m.x, m.y, m.width, m.height), position, w, h, anchor)
+}
+
+/// `m` with its work area replaced by [`drawer_area`], for laying out a frame.
+fn frame_monitor(m: &Monitor) -> Monitor {
+    let mut f = m.clone();
+    let (x, y, w, h) = drawer_area(m);
+    f.work_x = x;
+    f.work_y = y;
+    f.work_width = w;
+    f.work_height = h;
+    f
 }
 
 /// The monitor's rectangle less Explorer's taskbar, if the taskbar is on it.
