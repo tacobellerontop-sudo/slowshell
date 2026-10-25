@@ -1690,13 +1690,24 @@ fn wrap_arms(
 
     // The two side arms run between the bar and the opposite arm, so the four
     // rectangles meet corner to corner with no overlap and no gap.
+    //
+    // Each arm is labelled with the edge it really sits on, because that label
+    // is what it reserves against. For a side bar the "side" arms are the top
+    // and bottom strips: calling them left and right asked Windows for an
+    // 1858-pixel-wide left app bar, which wrecked the work area for every bar,
+    // so maximised windows went straight under the bar again.
     if band > 0 {
-        for edge in [Position::Left, Position::Right] {
+        let (near, far) = if horizontal {
+            (Position::Left, Position::Right)
+        } else {
+            (Position::Top, Position::Bottom)
+        };
+        for edge in [near, far] {
             let (x, y, w, h) = if horizontal {
-                let x = if edge == Position::Left { wx } else { wx + ww - t };
+                let x = if edge == near { wx } else { wx + ww - t };
                 (x, wy + band_lo, t, band)
             } else {
-                let y = if edge == Position::Left { wy } else { wy + wh - t };
+                let y = if edge == near { wy } else { wy + wh - t };
                 (wx + band_lo, y, band, t)
             };
             arms.push((edge, x, y, w, h));
@@ -2545,6 +2556,25 @@ mod tests {
                 Position::Left => assert_eq!(opposite.1 .0, 0, "{edge}: left arm misplaced"),
                 Position::Right => assert_eq!(opposite.1 .0, 1920 - 6, "{edge}: right arm misplaced"),
                 Position::Floating => {}
+            }
+        }
+    }
+
+    #[test]
+    fn every_arm_reserves_against_the_edge_it_sits_on() {
+        // An arm's position is the edge its app bar reserves. A strip along the
+        // top labelled `Left` asks for a left bar as wide as the screen.
+        let m = monitor_with_work_area(1032);
+        for edge in ["top", "bottom", "left", "right"] {
+            for (p, (x, y, w, h)) in arm_bounds(&wrap_arms(&wrapped(edge, 40.0), &m, None, &Theme::default())) {
+                let expect = match p {
+                    Position::Top => y == 0 && w > h,
+                    Position::Bottom => y + h as i32 == 1032 && w > h,
+                    Position::Left => x == 0 && h > w,
+                    Position::Right => x + w as i32 == 1920 && h > w,
+                    Position::Floating => false,
+                };
+                assert!(expect, "{edge} bar: arm labelled {p:?} is at {x},{y} {w}x{h}");
             }
         }
     }

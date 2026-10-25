@@ -250,6 +250,20 @@ impl AppBar {
                 right: rect.2,
                 bottom: rect.3,
             };
+            // Ask first, as the documentation and every working app bar (yasb,
+            // the taskbar itself) do: `ABM_QUERYPOS` moves the rectangle off any
+            // bar already on this edge, and the bar's thickness is then
+            // re-applied from the edge Windows chose. Going straight to
+            // `ABM_SETPOS` can be accepted without the work area moving.
+            SHAppBarMessage(ABM_QUERYPOS, &mut data);
+            let (w, h) = (rect.2 - rect.0, rect.3 - rect.1);
+            match self.edge {
+                Edge::Top => data.rc.bottom = data.rc.top + h,
+                Edge::Bottom => data.rc.top = data.rc.bottom - h,
+                Edge::Left => data.rc.right = data.rc.left + w,
+                Edge::Right => data.rc.left = data.rc.right - w,
+                Edge::None => {}
+            }
             let ok = SHAppBarMessage(ABM_SETPOS, &mut data);
             slowshell_core::debug!(
                 "ABM_SETPOS {:?} on the {} edge returned {ok}",
