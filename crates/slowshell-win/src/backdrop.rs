@@ -83,6 +83,25 @@ pub fn apply(hwnd: HWND, backdrop: Backdrop, dark: bool) -> bool {
     }
 }
 
+/// Ask the compositor not to round this window's corners.
+///
+/// Windows 11 rounds the corners of top-level windows on its own. For a bar that
+/// is invisible, but the frame is four windows meeting edge to edge, and each
+/// rounded corner left a notch of wallpaper showing at every join. Older builds
+/// do not know the attribute and never rounded anything, so failure is fine.
+pub fn square_corners(hwnd: HWND) {
+    // DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_DONOTROUND = 1.
+    let value: i32 = 1;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(33),
+            &value as *const i32 as *const _,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+}
+
 unsafe fn set_system_backdrop(hwnd: HWND, kind: windows::Win32::Graphics::Dwm::DWM_SYSTEMBACKDROP_TYPE) -> bool {
     let value = kind.0 as i32;
     // `DwmSetWindowAttribute` returns S_OK on builds that know the attribute and

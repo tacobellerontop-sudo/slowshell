@@ -17,6 +17,7 @@
 //! | [`input`] | Logical keys, hotkey parsing |
 //! | [`ipc_pipe`] | The named-pipe transport `shellctl` talks over |
 //! | [`kerys`] | Finding, starting and stopping the Kerys hotkey daemon |
+//! | [`wm`] | Sending commands to rustWM over its pipe |
 //! | [`sysinfo`] | Battery, processor, memory, network and volume readings |
 //! | [`monitors`] | Display enumeration, work areas, reserved zones |
 //! | [`render`] | Direct2D device, brushes, text, draw commands |
@@ -30,6 +31,7 @@ pub mod hit_test;
 pub mod input;
 pub mod ipc_pipe;
 pub mod kerys;
+pub mod wm;
 pub mod launch;
 pub mod media;
 pub mod monitors;

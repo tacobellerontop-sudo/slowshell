@@ -172,6 +172,19 @@ for rustWM. These control it the way its own command line does; see
 
 ---
 
+## rustWM
+
+| Action | Does |
+|---|---|
+| `wm.send("workspace 3")` | Send one command to rustWM over `\\.\pipe\rustwm`, the same string `rwm workspace 3` sends. |
+
+No `rwm.exe` is needed on `PATH`. A `workspace N` command also sets
+`wm.workspace` to `N`, so a bar can highlight the current workspace;
+`wm.running` says whether rustWM's pipe exists. rustWM or Kerys can push
+`wm.workspace` themselves with `shellctl set wm.workspace 3`.
+
+---
+
 ## Windows
 
 | Action | Does |
@@ -255,7 +268,7 @@ Registered actions: audio.lower, audio.mute, audio.raise, audio.setVolume, audio
   clipboard.get, clipboard.set, exec.run, kerys.settings, kerys.start, kerys.stop,
   kerys.toggle, keys.send, launch, notify, screens.list, shell.close, shell.open,
   shell.overlay, shell.reload, shell.stop, shell.toggle, system.restart, system.shutdown,
-  windows.lock, windows.minimiseAll
+  windows.lock, windows.minimiseAll, wm.send
 ```
 
 A misspelling gets a "did you mean" when something is genuinely close. When

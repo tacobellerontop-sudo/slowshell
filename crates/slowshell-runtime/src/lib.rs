@@ -222,6 +222,10 @@ impl Runtime {
         // only checks whether Kerys is running.
         seed(&self.reactor, "kerys.running", false);
         seed(&self.reactor, "kerys.mode", "default");
+        // rustWM. `wm.workspace` is set when the shell switches workspace, and
+        // rustWM or Kerys can push it with `{"cmd":"set","key":"wm.workspace"}`.
+        seed(&self.reactor, "wm.running", false);
+        seed(&self.reactor, "wm.workspace", "1");
         // Now playing, from the SMTC global session manager. Backed for real by
         // `slowshell_win::media`; seeded here so a config that reads `media.title`
         // compiles on a machine where nothing is playing, and shows nothing rather

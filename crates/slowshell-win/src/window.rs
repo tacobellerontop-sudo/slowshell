@@ -290,6 +290,8 @@ pub fn create_surface(
 /// the shell quits the first time a config reload removes a panel — which is the
 /// single most ordinary thing a shell does.
 pub fn destroy(handle: SurfaceHandle) {
+    // A later window can be handed the same handle value.
+    crate::hit_test::clear_regions(handle.hwnd.0 as isize);
     unsafe {
         let ptr = userdata(handle.hwnd);
         if !ptr.is_null() {
@@ -639,8 +641,19 @@ unsafe extern "system" fn wnd_proc(
             // The shell decides per pixel whether the point is interactive. A
             // default of "transparent" means empty regions of a bar fall through
             // to the desktop without the user configuring anything.
-            let interactive = with_state(hwnd, |s| crate::hit_test::hit_test(s, x as f32, y as f32))
-                .unwrap_or(false);
+            // The message carries screen coordinates in physical pixels, and the
+            // regions are logical and relative to the window, so convert first.
+            // Testing the raw point only ever worked for a bar at the screen's
+            // top-left at 100% scale.
+            let mut p = windows::Win32::Foundation::POINT { x, y };
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p);
+            }
+            let scale = scale_of(hwnd).max(0.01);
+            let (lx, ly) = (p.x as f32 / scale, p.y as f32 / scale);
+            let interactive =
+                with_state(hwnd, |s| crate::hit_test::hit_test(s, hwnd.0 as isize, lx, ly))
+                    .unwrap_or(false);
             LRESULT(if interactive { HTCLIENT as isize } else { HTTRANSPARENT as isize })
         }
         WM_MOUSEMOVE => {

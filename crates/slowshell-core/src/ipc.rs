@@ -45,7 +45,7 @@ pub enum Request {
 /// that knows its value. Everything else (the clock, the battery) is the shell's
 /// own reading of the system, and a script that could overwrite it could make
 /// the bar lie.
-pub const EXTERNAL_PREFIXES: &[&str] = &["kerys."];
+pub const EXTERNAL_PREFIXES: &[&str] = &["kerys.", "wm."];
 
 /// Whether `key` may be written with [`Request::Set`].
 pub fn is_external_key(key: &str) -> bool {

@@ -465,6 +465,24 @@ fn blank(hwnd: HWND) -> APPBARDATA {
     }
 }
 
+/// Explorer's taskbar: the edge it is on and its rectangle, in physical pixels.
+pub fn taskbar() -> Option<(Edge, (i32, i32, i32, i32))> {
+    let mut data = blank(HWND(std::ptr::null_mut()));
+    // SAFETY: fills a caller-owned struct whose size field is set.
+    if unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut data) } == 0 {
+        return None;
+    }
+    let edge = match data.uEdge {
+        ABE_TOP => Edge::Top,
+        ABE_BOTTOM => Edge::Bottom,
+        ABE_LEFT => Edge::Left,
+        ABE_RIGHT => Edge::Right,
+        _ => return None,
+    };
+    let r = data.rc;
+    Some((edge, (r.left, r.top, r.right, r.bottom)))
+}
+
 /// Every app bar Windows has registered, with the edge **it** reports.
 ///
 /// The subtle part, and the reason a hand-rolled version of this usually

@@ -100,6 +100,11 @@ pub struct Resolved {
     pub width: Size,
     pub height: Size,
     pub background_present: bool,
+    /// A `color` written as an expression, as the theme token or hex string it
+    /// evaluated to this frame. `None` when the colour is fixed.
+    pub color: Option<String>,
+    /// The same for `background`.
+    pub background: Option<String>,
     /// Local civil time, as a Unix timestamp shifted by the UTC offset.
     ///
     /// `None` means no clock source has been published, so a `Clock` falls back to
@@ -118,6 +123,8 @@ impl Default for Resolved {
             width: Size::Auto,
             height: Size::Auto,
             background_present: true,
+            color: None,
+            background: None,
             clock_unix: None,
         }
     }
@@ -140,6 +147,8 @@ impl Resolved {
             width: e.style.width,
             height: e.style.height,
             background_present: true,
+            color: None,
+            background: None,
             clock_unix: None,
         }
     }
@@ -203,7 +212,14 @@ impl<M: Measurer> Pass<'_, M> {
 
         // Margin is outside the element, padding inside it.
         let content = slot_within(slot, &style, true);
-        let inner = content.inset(style.padding.left, style.padding.top);
+        // Each side's own padding. `Rect::inset` is symmetric, and using it here
+        // gave `padding: [8, 14, 14, 14]` an 8px bottom as well as an 8px top.
+        let inner = Rect::new(
+            content.x + style.padding.left,
+            content.y + style.padding.top,
+            (content.w - style.padding.horizontal()).max(0.0),
+            (content.h - style.padding.vertical()).max(0.0),
+        );
         e.rect.set(inner);
 
         let kids = Self::kids(e);
@@ -626,6 +642,8 @@ fn collect(
             width: d.width.map(|i| Size::parse(&reactor.get(i))).unwrap_or(base.width),
             height: d.height.map(|i| Size::parse(&reactor.get(i))).unwrap_or(base.height),
             background_present: d.background.is_some(),
+            color: d.color.map(|i| reactor.get(i).to_string_lossy()),
+            background: d.background.map(|i| reactor.get(i).to_string_lossy()),
             clock_unix: clock,
         },
     );

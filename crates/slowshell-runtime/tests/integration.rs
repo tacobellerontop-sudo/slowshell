@@ -101,6 +101,7 @@ fn runtime() -> Runtime {
     registry.register("notify", "Notify.", &["title", "body"], |_| Ok(Value::Null));
     registry.register("clipboard.set", "Copy.", &["text"], |_| Ok(Value::Null));
     registry.register("exec.run", "Run.", &["program", "args"], |_| Ok(Value::Null));
+    registry.register("wm.send", "Send to rustWM.", &["command"], |_| Ok(Value::Null));
     rt.actions = registry;
     rt
 }
@@ -656,19 +657,24 @@ fn hit_testing_finds_the_region_under_a_point_and_past_it_returns_nothing() {
     let regions = slowshell_ui::collect_regions(&root, &values, &slowshell_ui::Style::default());
     assert_eq!(regions.len(), 2, "both labels have handlers");
 
-    slowshell_win::hit_test::set_regions(regions);
-    let first = slowshell_win::hit_test::regions()[0].clone();
+    slowshell_win::hit_test::set_regions(1, regions);
+    let first = slowshell_win::hit_test::regions(1)[0].clone();
 
     // Inside the first region, on its element.
-    let hit = slowshell_win::hit_test::region_at(first.x + first.w / 2.0, first.y + first.h / 2.0);
+    let hit = slowshell_win::hit_test::region_at(1, first.x + first.w / 2.0, first.y + first.h / 2.0);
     assert_eq!(hit, Some(first.id), "a click inside a region must reach it");
     // Past the last region, nothing: the pointer falls through to the desktop.
     assert_eq!(
-        slowshell_win::hit_test::region_at(399.0, 31.0),
+        slowshell_win::hit_test::region_at(1, 399.0, 31.0),
         None,
         "past the content the bar must be click-through"
     );
-    slowshell_win::hit_test::clear_regions();
+    assert_eq!(
+        slowshell_win::hit_test::region_at(2, first.x + first.w / 2.0, first.y + first.h / 2.0),
+        None,
+        "another window's regions must not catch the click"
+    );
+    slowshell_win::hit_test::clear_regions(1);
 }
 
 // --------------------------------------------------------------------------- //
